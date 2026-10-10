@@ -83,15 +83,15 @@ class Go2TrotCfg(Go2Cfg):
         # Use the SDK's OBJ visuals; keep our URDF's complete physical model.
         vsim_visual_mesh_dir = "{GYM_ROOT_DIR}/thirdparty/vlearn/assets/go2/assets"
         foot_name = "foot"
-        penalize_contacts_on = ["calf"]
-        terminate_after_contacts_on = ["base"]
+        penalize_contacts_on = ["calf", "hip"]#["calf"]
+        terminate_after_contacts_on = ["base", "Head_upper", "Head_lower"]# ["base"]
         end_effector_names = ["foot"]
         fix_base_link = False
         disable_gravity = False
         disable_motors = False
 
     class reward_settings(Go2Cfg.reward_settings):
-        base_height_target = Go2Cfg.reward_settings.base_height_target
+        base_height_target = 0.9*Go2Cfg.reward_settings.base_height_target
 
     class scaling(Go2Cfg.scaling):
         # Canonical RobotLayout order is FL, FR, RL, RR, with
@@ -176,7 +176,7 @@ class Go2TrotRunnerCfg(Go2RunnerCfg):
         lam = 0.95
         # shared
         batch_size = 2**15
-        max_gradient_steps = 24
+        max_gradient_steps = 32
         # new
         clip_param = 0.2
         learning_rate = 1.0e-3
