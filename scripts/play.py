@@ -140,12 +140,8 @@ def play(env, runner):
         )
         env.step()
 
-        ##AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-        mask = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
-        env._resample_commands(mask)
-        print(env.commands[:, 3].min(), env.commands[:, 3].max())  # within ±0.10, no NaN
-        env.commands[0] = torch.tensor([3.0, 0.0, 0.0, 0.1], device=env.device)
-        print(env.get_state("commands")[0])  # expect [1, 0, 0, 1]
+        print(env.commands[0, 3].item(), env.base_height[0].item())
+
         env.check_exit()
 
 

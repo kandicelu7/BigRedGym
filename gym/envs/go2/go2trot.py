@@ -146,9 +146,12 @@ class Go2Trot(LeggedRobot):
             self.commands.masked_fill_(drop, 0.0)
 
         #aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  
-        lo, hi = self.command_ranges["height"]
-        height = torch_rand_float(lo, hi, shape=(self.num_envs, 1), device=self.device)
-        masked_update(self.commands[:, 3:4], height, command_mask)
+        if self.commands.shape[1] > 3:
+            lo, hi = self.command_ranges["height"]
+            height = torch_rand_float(
+                lo, hi, shape=(self.num_envs, 1), device=self.device
+            )
+            masked_update(self.commands[:, 3:4], height, command_mask)
 
     def _reset_idx(self, reset_mask):
         super()._reset_idx(reset_mask)
