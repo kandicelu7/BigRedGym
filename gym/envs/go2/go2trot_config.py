@@ -60,9 +60,14 @@ class Go2TrotCfg(Go2Cfg):
 
     class commands(Go2Cfg.commands):
         var = 1.0
+        #aaaaaaaaaaaaaaaaaaaaaaa
+        num_commands = 4
 
         class ranges(Go2Cfg.commands.ranges):
             lin_vel_x = [-1.0, 0.0, 1.0, 3.0]
+            
+            #aaaaaaaaaaaaaaaaaaaaaaaa
+            height = [-0.10, 0.10]
 
     class push_robots(Go2Cfg.push_robots):
         toggle = True
@@ -83,15 +88,17 @@ class Go2TrotCfg(Go2Cfg):
         # Use the SDK's OBJ visuals; keep our URDF's complete physical model.
         vsim_visual_mesh_dir = "{GYM_ROOT_DIR}/thirdparty/vlearn/assets/go2/assets"
         foot_name = "foot"
-        penalize_contacts_on = ["calf", "hip"]#["calf"]
-        terminate_after_contacts_on = ["base", "Head_upper", "Head_lower"]# ["base"]
+        penalize_contacts_on = ["calf", "hip"]
+        terminate_after_contacts_on = ["base", "Head_upper", "Head_lower"]
         end_effector_names = ["foot"]
         fix_base_link = False
         disable_gravity = False
         disable_motors = False
 
     class reward_settings(Go2Cfg.reward_settings):
-        base_height_target = 0.9*Go2Cfg.reward_settings.base_height_target
+        base_height_target = Go2Cfg.reward_settings.base_height_target
+        standing_height = 0.3
+        height_tracking_scale = 0.1
 
     class scaling(Go2Cfg.scaling):
         # Canonical RobotLayout order is FL, FR, RL, RR, with
@@ -101,6 +108,7 @@ class Go2TrotCfg(Go2Cfg):
         dof_pos_obs = dof_pos
         dof_pos_target = [0.5 * x for x in dof_pos]
         tau_ff = 4 * [23.7, 23.7, 45.43]
+        commands = [3, 1, 3, 0.1]
 
 
 class Go2TrotRunnerCfg(Go2RunnerCfg):
@@ -161,11 +169,12 @@ class Go2TrotRunnerCfg(Go2RunnerCfg):
                 dof_pos_limits = 0.0
                 feet_contact_forces = 0.0
                 dof_near_home = 0.0
-                min_base_height = 0.5
+                min_base_height = 0.0 ###
                 action_rate = 0.25
                 action_rate2 = 0.025
                 trot_support = 0.625
                 swing_contact = 1.25
+                height_tracking = 1.0 ###
 
             class termination_weight:
                 termination = 0.01
@@ -176,7 +185,7 @@ class Go2TrotRunnerCfg(Go2RunnerCfg):
         lam = 0.95
         # shared
         batch_size = 2**15
-        max_gradient_steps = 32
+        max_gradient_steps = 24
         # new
         clip_param = 0.2
         learning_rate = 1.0e-3

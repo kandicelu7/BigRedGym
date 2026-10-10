@@ -192,7 +192,7 @@ class LeggedRobot(BaseTask):
 
     def _resample_commands(self, command_mask):
         """Randomly sample commands for selected environments."""
-        candidate = torch.empty_like(self.commands)
+        candidate = self.commands.clone()
         candidate[:, 0] = torch_rand_float(
             self.command_ranges["lin_vel_x"][0],
             self.command_ranges["lin_vel_x"][1],
@@ -430,7 +430,10 @@ class LeggedRobot(BaseTask):
             self.num_envs, self.num_actuators * 3, dtype=torch.float, device=self.device
         )
         self.commands = torch.zeros(
-            self.num_envs, 3, dtype=torch.float, device=self.device
+                self.num_envs,
+                getattr(self.cfg.commands, "num_commands", 3),
+                dtype=torch.float,
+                device=self.device,
         )
         self.base_lin_vel = quat_rotate_inverse(
             self.base_quat, self.root_states[:, 7:10]

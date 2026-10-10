@@ -145,6 +145,11 @@ class Go2Trot(LeggedRobot):
             )
             self.commands.masked_fill_(drop, 0.0)
 
+        #aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  
+        lo, hi = self.command_ranges["height"]
+        height = torch_rand_float(lo, hi, shape=(self.num_envs, 1), device=self.device)
+        masked_update(self.commands[:, 3:4], height, command_mask)
+
     def _reset_idx(self, reset_mask):
         super()._reset_idx(reset_mask)
         self.dof_pos_target.masked_fill_(reset_mask.unsqueeze(1), 0.0)
@@ -252,3 +257,11 @@ class Go2Trot(LeggedRobot):
             ),
             dim=1,
         )
+
+    def _reward_height_tracking(self):
+        """Track commanded base height (standing height + offset)"""
+        target = self.cfg.reward_settings.standing_height + self.commands[:, 3]
+        error = (
+            self.base_height.flatten() - target
+        ) / self.cfg.reward_settings.height_tracking_scale
+        return self._sqrdexp(error)
