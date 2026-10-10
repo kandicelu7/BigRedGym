@@ -96,9 +96,10 @@ class Go2TrotCfg(Go2Cfg):
         disable_motors = False
 
     class reward_settings(Go2Cfg.reward_settings):
-        base_height_target = Go2Cfg.reward_settings.base_height_target
+        #base_height_target = Go2Cfg.reward_settings.base_height_target
+        base_height_target = 0.3
         standing_height = 0.3
-        height_tracking_scale = 0.1 
+        height_tracking_scale = 0.1
 
     class scaling(Go2Cfg.scaling):
         # Canonical RobotLayout order is FL, FR, RL, RR, with
@@ -169,12 +170,13 @@ class Go2TrotRunnerCfg(Go2RunnerCfg):
                 dof_pos_limits = 0.0
                 feet_contact_forces = 0.0
                 dof_near_home = 0.0
-                min_base_height = 0.0 ###
+                min_base_height = 0.5 ###
                 action_rate = 0.25
                 action_rate2 = 0.025
                 trot_support = 0.625
                 swing_contact = 1.25
-                height_tracking = 1.0 ###
+                height_tracking = 2.0 ###
+                collision = 0.5
 
             class termination_weight:
                 termination = 0.01
