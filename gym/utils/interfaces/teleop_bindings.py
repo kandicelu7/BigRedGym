@@ -81,8 +81,8 @@ class TeleopCommands:
         
         #aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         self.max_height = 0.07
-        self.min_height = -0.15
-        self.increment_height = (self.max_height - self.min_height) * 0.1
+        self.min_height = -0.18
+        self.increment_height = (self.max_height - self.min_height) * 0.05
 
 
         env.commands[:] = 0.0

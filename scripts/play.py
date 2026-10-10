@@ -132,7 +132,7 @@ def setup(args):
 
 def play(env, runner):
     n_steps = 10 * int(env.max_episode_length)
-    for _ in range(n_steps):
+    for i in range(n_steps):
         runner.set_actions(
             runner.actor_cfg["actions"],
             runner.get_inference_actions(),

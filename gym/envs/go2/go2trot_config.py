@@ -67,7 +67,7 @@ class Go2TrotCfg(Go2Cfg):
             lin_vel_x = [-1.0, 0.0, 1.0, 3.0]
             
             #aaaaaaaaaaaaaaaaaaaaaaaa
-            height = [-0.15, 0.07]
+            height = [-0.12, 0.07]
 
     class push_robots(Go2Cfg.push_robots):
         toggle = True
@@ -97,7 +97,7 @@ class Go2TrotCfg(Go2Cfg):
 
     class reward_settings(Go2Cfg.reward_settings):
         #base_height_target = Go2Cfg.reward_settings.base_height_target
-        base_height_target = 0.15
+        base_height_target = 0.1
         standing_height = 0.3
         height_tracking_scale = 0.1
 
