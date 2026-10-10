@@ -140,7 +140,8 @@ def play(env, runner):
         )
         env.step()
 
-        print(env.commands[0, 3].item(), env.base_height[0].item())
+        if i % 10 == 0:
+            print(env.commands[0, 3].item(), env.base_height[0].item())
 
         env.check_exit()
 
