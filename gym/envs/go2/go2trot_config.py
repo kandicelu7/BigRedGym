@@ -67,7 +67,7 @@ class Go2TrotCfg(Go2Cfg):
             lin_vel_x = [-1.0, 0.0, 1.0, 3.0]
             
             #aaaaaaaaaaaaaaaaaaaaaaaa
-            height = [-0.15, 0.15]
+            height = [-0.1, 0.1]
 
     class push_robots(Go2Cfg.push_robots):
         toggle = True
@@ -108,7 +108,7 @@ class Go2TrotCfg(Go2Cfg):
         dof_pos_obs = dof_pos
         dof_pos_target = [0.5 * x for x in dof_pos]
         tau_ff = 4 * [23.7, 23.7, 45.43]
-        commands = [3, 1, 3, 0.15]
+        commands = [3, 1, 3, 0.1]
 
 
 class Go2TrotRunnerCfg(Go2RunnerCfg):

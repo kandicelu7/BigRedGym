@@ -80,8 +80,8 @@ class TeleopCommands:
         self.increment_yaw = self.max_vel_yaw * 0.2
         
         #aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-        self.max_height = 0.15
-        self.min_height = -0.15
+        self.max_height = 0.1
+        self.min_height = -0.1
         self.increment_height = (self.max_height - self.min_height) * 0.1
 
 
