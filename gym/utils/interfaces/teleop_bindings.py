@@ -78,7 +78,7 @@ class TeleopCommands:
 
         self.max_vel_yaw = 2.0
         self.increment_yaw = self.max_vel_yaw * 0.2
-        
+
         #aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         self.max_height = 0.07
         self.min_height = -0.18
@@ -87,7 +87,7 @@ class TeleopCommands:
 
         env.commands[:] = 0.0
         env.commands[:, 0] = 1.0  # seed forward velocity so motion is visible
-        
+
         if hasattr(env.cfg, "commands"):
             env.cfg.commands.resampling_time = env.max_episode_length_s + 1
 

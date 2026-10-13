@@ -13,6 +13,7 @@ import argparse
 import random
 
 import torch
+import numpy as np
 
 from gym.utils.helpers import set_seed
 from gym.utils.task_registry import task_registry
@@ -132,18 +133,28 @@ def setup(args):
 
 def play(env, runner):
     n_steps = 10 * int(env.max_episode_length)
-    for i in range(n_steps):
-        runner.set_actions(
-            runner.actor_cfg["actions"],
-            runner.get_inference_actions(),
-            runner.actor_cfg["disable_actions"],
-        )
-        env.step()
+    log = []
+    try:
+        for i in range(n_steps):
+            runner.set_actions(
+                runner.actor_cfg["actions"],
+                runner.get_inference_actions(),
+                runner.actor_cfg["disable_actions"],
+            )
+            env.step()
 
-        if i % 10 == 0:
-            print(env.commands[0, 3].item(), env.base_height[0].item())
+            log.append(
+                (
+                    i * env.dt,
+                    env.commands[0, 3].item(),
+                    env.base_height[0].item(),
+                    env.episode_length_buf[0].item(),
+                )
+            )
 
-        env.check_exit()
+            env.check_exit()
+    finally:
+        np.save("height_log.npy", np.array(log))
 
 
 if __name__ == "__main__":
