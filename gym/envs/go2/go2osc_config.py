@@ -18,15 +18,18 @@ class Go2OscCfg(Go2Cfg):
 
     class osc:
         process_noise_std = 0.25
-        # [omega, sigma, xi] = [omega_stop, coupling_stop, offset_stop]
-        # if |v_x| <= stop_threshold, else
-        # [min(omega_step + |v_x|, omega_max), coupling, offset]  (Eq. 5)
-        stop_threshold = 0.5
-        omega_stop = 1.0  # [Hz]
+        # Frequency rises continuously with commanded speed (no jump at the
+        # stop threshold, unlike Eq. 5), so slow walking gets slow stepping:
+        #   omega = min(omega_min + omega_slope * |v_x|, omega_max)
+        omega_min = 1.0  # [Hz] at |v_x| = 0
+        omega_slope = 1.5  # [Hz per m/s]
+        omega_max = 4.0  # [Hz]
+        # Standing regime (Eq. 5): [sigma, xi] = [coupling_stop, offset_stop]
+        # if |v_x| <= stop_threshold, else [coupling, offset]. Matches the
+        # 0.2 m/s below which the base class zeroes sampled commands.
+        stop_threshold = 0.2
         coupling_stop = 4.0
         offset_stop = 1.0
-        omega_step = 1.5  # [Hz]
-        omega_max = 4.0  # [Hz]
         coupling = 1.0
         offset = 0.0
 
@@ -62,6 +65,10 @@ class Go2OscCfg(Go2Cfg):
 
     class reward_settings(Go2Cfg.reward_settings):
         base_height_target = 0.25
+        # Forward-velocity tracking uses the absolute error (no 1/(1+|cmd|)
+        # scaling) and its own, tighter sigma, so overshooting a slow command
+        # is penalized; tracking_sigma still applies to the other rewards.
+        lin_vel_tracking_sigma = 0.15
 
     class scaling(Go2Cfg.scaling):
         phase_vel = 2 * 3.14159 * 4.0

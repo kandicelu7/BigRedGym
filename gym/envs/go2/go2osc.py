@@ -66,15 +66,17 @@ class Go2Osc(Go2):
         self._update_osc_params()
 
     def _update_osc_params(self):
-        """Oscillator parameters from the commanded forward speed (Eq. 5)."""
+        """Oscillator parameters from the commanded forward speed.
+
+        Frequency grows continuously with speed; coupling and offset switch to
+        the standing regime of Eq. 5 at low speed.
+        """
         osc = self.cfg.osc
         speed = torch.abs(self.commands[:, 0:1])
-        stop = speed <= osc.stop_threshold
-        self.osc_omega[:] = torch.where(
-            stop,
-            osc.omega_stop,
-            torch.clamp(osc.omega_step + speed, max=osc.omega_max),
+        self.osc_omega[:] = torch.clamp(
+            osc.omega_min + osc.omega_slope * speed, max=osc.omega_max
         )
+        stop = speed <= osc.stop_threshold
         self.osc_coupling[:] = torch.where(stop, osc.coupling_stop, osc.coupling)
         self.osc_offset[:] = torch.where(stop, osc.offset_stop, osc.offset)
 
@@ -143,6 +145,12 @@ class Go2Osc(Go2):
         self.dof_vel[:, idx] = torch.where(
             reset_mask.unsqueeze(1), 0.0, self.dof_vel[:, idx]
         )
+
+    def _reward_tracking_lin_vel(self):
+        """Tracking of linear velocity commands (xy axes), absolute error."""
+        error = self.commands[:, :2] - self.base_lin_vel[:, :2]
+        error = torch.sum(torch.square(error), dim=1)
+        return torch.exp(-error / self.cfg.reward_settings.lin_vel_tracking_sigma)
 
     def _reward_gait(self):
         """Penalize load in swing [0, pi), reward load in stance [pi, 2 pi)."""
