@@ -49,11 +49,11 @@ def test_load_slows_phase_near_liftoff_and_speeds_it_after_touchdown():
 def test_osc_params_follow_commanded_speed():
     task = make_task(num_envs=5)
     task.commands = torch.zeros(5, 3)
-    task.commands[:, 0] = torch.tensor([0.0, 0.2, 0.5, 1.0, 3.0])
+    task.commands[:, 0] = torch.tensor([0.0, 0.2, 1.0, 2.0, 3.0])
     task._update_osc_params()
     # Frequency is continuous in speed, capped at omega_max.
     torch.testing.assert_close(
-        task.osc_omega[:, 0], torch.tensor([1.0, 1.3, 1.75, 2.5, 4.0])
+        task.osc_omega[:, 0], torch.tensor([1.0, 1.25, 2.25, 3.5, 4.0])
     )
     # Standing regime up to and including the 0.2 m/s threshold.
     torch.testing.assert_close(

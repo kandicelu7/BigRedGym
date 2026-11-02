@@ -22,7 +22,9 @@ class Go2OscCfg(Go2Cfg):
         # stop threshold, unlike Eq. 5), so slow walking gets slow stepping:
         #   omega = min(omega_min + omega_slope * |v_x|, omega_max)
         omega_min = 1.0  # [Hz] at |v_x| = 0
-        omega_slope = 1.5  # [Hz per m/s]
+        # 1.25 gives the 3.5 Hz of Eq. 5 at 2 m/s; 1.5 hit the cap there and
+        # the policy overshot fast commands (2 m/s -> ~3 m/s).
+        omega_slope = 1.25  # [Hz per m/s]
         omega_max = 4.0  # [Hz]
         # Standing regime (Eq. 5): [sigma, xi] = [coupling_stop, offset_stop]
         # if |v_x| <= stop_threshold, else [coupling, offset]. Matches the

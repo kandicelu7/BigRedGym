@@ -31,6 +31,12 @@ def get_args(argv=None):
     parser.add_argument("--checkpoint", type=int, default=-1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--original_cfg",
+        action="store_true",
+        help="use the configs saved with the selected run instead of the "
+        "current ones (needed when the config changed after training)",
+    )
+    parser.add_argument(
         "--speeds",
         type=float,
         nargs="+",
@@ -137,6 +143,8 @@ if __name__ == "__main__":
         play_argv += ["--experiment_name", args.experiment_name]
     if args.load_run is not None:
         play_argv += ["--load_run", args.load_run]
+    if args.original_cfg:
+        play_argv += ["--original_cfg"]
 
     with torch.no_grad():
         env, runner, _ = play.setup(play.get_play_args(play_argv))
