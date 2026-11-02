@@ -65,10 +65,6 @@ class Go2OscCfg(Go2Cfg):
 
     class reward_settings(Go2Cfg.reward_settings):
         base_height_target = 0.25
-        # Forward-velocity tracking uses the absolute error (no 1/(1+|cmd|)
-        # scaling) and its own, tighter sigma, so overshooting a slow command
-        # is penalized; tracking_sigma still applies to the other rewards.
-        lin_vel_tracking_sigma = 0.15
 
     class scaling(Go2Cfg.scaling):
         phase_vel = 2 * 3.14159 * 4.0

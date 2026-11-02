@@ -64,18 +64,6 @@ def test_osc_params_follow_commanded_speed():
     )
 
 
-def test_lin_vel_tracking_penalizes_overshoot_at_low_speed():
-    task = make_task(num_envs=2)
-    task.commands = torch.zeros(2, 3)
-    task.commands[:, 0] = 0.6
-    task.base_lin_vel = torch.zeros(2, 3)
-    task.base_lin_vel[:, 0] = torch.tensor([0.6, 0.85])
-    reward = task._reward_tracking_lin_vel()
-    torch.testing.assert_close(reward[0], torch.tensor(1.0))
-    # 0.25 m/s overshoot: exp(-0.0625 / 0.15).
-    torch.testing.assert_close(reward[1], torch.tensor(math.exp(-0.0625 / 0.15)))
-
-
 def test_locked_leg_is_masked_from_observations_and_gait_reward():
     active = torch.tensor([True, False, True, True])
     task = make_task(foot_force=98.1, phase=1.5 * math.pi, active_legs=active)

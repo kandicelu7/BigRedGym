@@ -146,12 +146,6 @@ class Go2Osc(Go2):
             reset_mask.unsqueeze(1), 0.0, self.dof_vel[:, idx]
         )
 
-    def _reward_tracking_lin_vel(self):
-        """Tracking of linear velocity commands (xy axes), absolute error."""
-        error = self.commands[:, :2] - self.base_lin_vel[:, :2]
-        error = torch.sum(torch.square(error), dim=1)
-        return torch.exp(-error / self.cfg.reward_settings.lin_vel_tracking_sigma)
-
     def _reward_gait(self):
         """Penalize load in swing [0, pi), reward load in stance [pi, 2 pi)."""
         return -torch.sum(
