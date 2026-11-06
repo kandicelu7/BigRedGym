@@ -20,6 +20,7 @@ class_dict = {
     "Pendulum": ".pendulum.pendulum",
     "Go2": ".go2.go2",
     "Go2Trot": ".go2.go2trot",
+    "Go2Osc": ".go2.go2osc",
 }
 
 config_dict = {
@@ -36,6 +37,9 @@ config_dict = {
     "PendulumPSDCfg": ".pendulum.pendulum_PSD_config",
     "Go2Cfg": ".go2.go2_config",
     "Go2TrotCfg": ".go2.go2trot_config",
+    "Go2OscCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedCfg": ".go2.go2osc_config",
 }
 
 runner_config_dict = {
@@ -52,6 +56,9 @@ runner_config_dict = {
     "PendulumPSDRunnerCfg": ".pendulum.pendulum_PSD_config",
     "Go2RunnerCfg": ".go2.go2_config",
     "Go2TrotRunnerCfg": ".go2.go2trot_config",
+    "Go2OscRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedRunnerCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedRunnerCfg": ".go2.go2osc_config",
 }
 
 task_dict = {
@@ -88,6 +95,17 @@ task_dict = {
     "psd_pendulum": ["Pendulum", "PendulumPSDCfg", "PendulumPSDRunnerCfg"],
     "go2": ["Go2", "Go2Cfg", "Go2RunnerCfg"],
     "go2trot": ["Go2Trot", "Go2TrotCfg", "Go2TrotRunnerCfg"],
+    "go2osc": ["Go2Osc", "Go2OscCfg", "Go2OscRunnerCfg"],
+    "go2osc_front_locked": [
+        "Go2Osc",
+        "Go2OscFrontLockedCfg",
+        "Go2OscFrontLockedRunnerCfg",
+    ],
+    "go2osc_hind_locked": [
+        "Go2Osc",
+        "Go2OscHindLockedCfg",
+        "Go2OscHindLockedRunnerCfg",
+    ],
 }
 
 
