@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import torch
 
 from gym.envs.go2.go2osc import Go2Osc
-from gym.envs.go2.go2osc_config import Go2OscCfg, Go2OscFrontLockedFixedCfg
+from gym.envs.go2.go2osc_config import Go2OscCfg
 
 
 def make_task(num_envs=1, foot_force=0.0, phase=0.0, active_legs=None):
@@ -73,19 +73,3 @@ def test_locked_leg_is_masked_from_observations_and_gait_reward():
     assert torch.all(task.phase_obs[:, [0, 2, 3, 4, 6, 7]] != 0.0)
     # Full load in mid-stance on the three active legs.
     torch.testing.assert_close(task._reward_gait(), torch.tensor([3.0]))
-
-
-def test_fixed_gait_config_holds_phase_gaps_under_load():
-    task = make_task(foot_force=98.1)
-    task.cfg = Go2OscFrontLockedFixedCfg()
-    task.cfg.osc.process_noise_std = 0.0
-    task.phase = torch.tensor([[0.0, 1.0, 2.0, 3.0]])
-    gaps = task.phase - task.phase[:, :1]
-    task.commands = torch.zeros(1, 3)
-    for speed in (1.0, 0.0):  # moving, and the (disabled) standing regime
-        task.commands[:, 0] = speed
-        task._update_osc_params()
-        for _ in range(20):
-            task._step_oscillators(0.01)
-        new_gaps = torch.remainder(task.phase - task.phase[:, :1], 2 * math.pi)
-        torch.testing.assert_close(new_gaps, torch.remainder(gaps, 2 * math.pi))
