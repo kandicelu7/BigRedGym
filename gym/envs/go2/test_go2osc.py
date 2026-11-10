@@ -73,3 +73,13 @@ def test_locked_leg_is_masked_from_observations_and_gait_reward():
     assert torch.all(task.phase_obs[:, [0, 2, 3, 4, 6, 7]] != 0.0)
     # Full load in mid-stance on the three active legs.
     torch.testing.assert_close(task._reward_gait(), torch.tensor([3.0]))
+
+
+def test_omega_range_holds_episode_frequency_regardless_of_speed(monkeypatch):
+    task = make_task(num_envs=3)
+    monkeypatch.setattr(task.cfg.osc, "omega_range", [1.25, 4.0])
+    task.commands = torch.zeros(3, 3)
+    task.commands[:, 0] = torch.tensor([0.5, 1.5, 2.5])
+    task.episode_omega = torch.tensor([[1.5], [3.0], [3.75]])
+    task._update_osc_params()
+    torch.testing.assert_close(task.osc_omega, task.episode_omega)

@@ -26,6 +26,10 @@ class Go2OscCfg(Go2Cfg):
         # the policy overshot fast commands (2 m/s -> ~3 m/s).
         omega_slope = 1.25  # [Hz per m/s]
         omega_max = 4.0  # [Hz]
+        # [low, high] in Hz: instead of the schedule above, draw omega
+        # uniformly per robot at each reset and hold it for the episode, so one
+        # policy learns every (speed, frequency) pair. None uses the schedule.
+        omega_range = None
         # Standing regime (Eq. 5): [sigma, xi] = [coupling_stop, offset_stop]
         # if |v_x| <= stop_threshold, else [coupling, offset]. Matches the
         # 0.2 m/s below which the base class zeroes sampled commands.
@@ -70,6 +74,7 @@ class Go2OscCfg(Go2Cfg):
 
     class scaling(Go2Cfg.scaling):
         phase_vel = 2 * 3.14159 * 4.0
+        osc_omega = 4.0
 
 
 class Go2OscRunnerCfg(Go2RunnerCfg):
@@ -136,6 +141,36 @@ class Go2OscHindLockedCfg(Go2OscCfg):
 class Go2OscHindLockedRunnerCfg(Go2OscRunnerCfg):
     class runner(Go2OscRunnerCfg.runner):
         experiment_name = "go2osc_hind_locked"
+
+
+class Go2OscFrontLockedOmegaCfg(Go2OscFrontLockedCfg):
+    """Front-locked, with the oscillator frequency drawn per episode.
+
+    One policy covers the whole (speed, frequency) grid of the sweep below, so
+    gait differences across the grid come from speed and frequency rather than
+    from separate training runs. Evaluate with
+    scripts/grid_eval.py --task go2osc_front_locked_omega.
+    """
+
+    class osc(Go2OscFrontLockedCfg.osc):
+        omega_range = [1.25, 4.0]  # [Hz], margin around SWEEP_OMEGAS
+
+    class commands(Go2OscFrontLockedCfg.commands):
+        class ranges(Go2OscFrontLockedCfg.commands.ranges):
+            # Margin around SWEEP_SPEEDS; above the 0.2 m/s standing cutoff.
+            lin_vel_x = [0.25, 2.75]  # [m/s]
+
+
+class Go2OscFrontLockedOmegaRunnerCfg(Go2OscFrontLockedRunnerCfg):
+    class actor(Go2OscFrontLockedRunnerCfg.actor):
+        obs = Go2OscFrontLockedRunnerCfg.actor.obs + ["osc_omega"]
+
+    class critic(Go2OscFrontLockedRunnerCfg.critic):
+        obs = Go2OscFrontLockedRunnerCfg.critic.obs + ["osc_omega"]
+
+    class runner(Go2OscFrontLockedRunnerCfg.runner):
+        experiment_name = "go2osc_front_locked_omega"
+        max_iterations = 1500
 
 
 # Coarse sweep: one front-locked policy per (commanded speed, oscillator

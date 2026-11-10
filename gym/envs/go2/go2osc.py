@@ -25,6 +25,8 @@ class Go2Osc(Go2):
         self.phase_obs = torch.zeros(self.num_envs, 8, device=self.device)
         self.grf = torch.zeros_like(self.phase)
         self.osc_omega = torch.ones(self.num_envs, 1, device=self.device)
+        # Per-episode frequency, used instead of the schedule if osc.omega_range.
+        self.episode_omega = torch.ones_like(self.osc_omega)
         self.osc_coupling = torch.zeros_like(self.osc_omega)
         self.osc_offset = torch.zeros_like(self.osc_omega)
 
@@ -73,9 +75,12 @@ class Go2Osc(Go2):
         """
         osc = self.cfg.osc
         speed = torch.abs(self.commands[:, 0:1])
-        self.osc_omega[:] = torch.clamp(
-            osc.omega_min + osc.omega_slope * speed, max=osc.omega_max
-        )
+        if osc.omega_range is not None:
+            self.osc_omega[:] = self.episode_omega
+        else:
+            self.osc_omega[:] = torch.clamp(
+                osc.omega_min + osc.omega_slope * speed, max=osc.omega_max
+            )
         stop = speed <= osc.stop_threshold
         self.osc_coupling[:] = torch.where(stop, osc.coupling_stop, osc.coupling)
         self.osc_offset[:] = torch.where(stop, osc.offset_stop, osc.offset)
@@ -124,6 +129,12 @@ class Go2Osc(Go2):
         phase = torch.rand_like(self.phase) * 2 * torch.pi
         masked_update(self.phase, phase, reset_mask)
         self.phase_vel.masked_fill_(reset_mask.unsqueeze(1), 0.0)
+        omega_range = self.cfg.osc.omega_range
+        if omega_range is not None:
+            low, high = omega_range
+            omega = low + (high - low) * torch.rand_like(self.episode_omega)
+            masked_update(self.episode_omega, omega, reset_mask)
+            masked_update(self.osc_omega, omega, reset_mask)
         self._update_phase_obs()
 
     def reset_to_basic(self, reset_mask):

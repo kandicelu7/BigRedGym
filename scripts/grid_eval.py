@@ -2,7 +2,8 @@
 
 For every sweep cell (go2osc_config.SWEEP_TASKS) with a trained run, runs that
 cell's policy at its own commanded speed and oscillator frequency, from random
-initial phases, and measures:
+initial phases. With --task, runs that one policy (trained with
+osc.omega_range) at every cell instead, forcing the cell's frequency. Measures:
 
     speed tracking (measured / commanded), fall rate,
     resulting gait (footfall timing matched to named three-legged gaits),
@@ -14,6 +15,7 @@ y axis, and saved as .npz next to the figure.
 Usage:
     uv run --frozen scripts/grid_eval.py
     uv run --frozen scripts/grid_eval.py --checkpoint 300 --out logs/sweep_results/it300.png
+    uv run --frozen scripts/grid_eval.py --task go2osc_front_locked_omega
 """
 
 import argparse
@@ -42,6 +44,15 @@ def get_args(argv=None):
     parser.add_argument(
         "--checkpoint", type=int, default=-1, help="model iteration (default: latest)"
     )
+    parser.add_argument(
+        "--task",
+        type=str,
+        default=None,
+        help="one policy evaluated at every cell (default: one policy per cell)",
+    )
+    parser.add_argument(
+        "--load_run", type=str, default=None, help="run of --task (default: latest)"
+    )
     parser.add_argument("--robots", type=int, default=64, help="robots per cell")
     parser.add_argument("--settle", type=float, default=10.0, help="settling time [s]")
     parser.add_argument("--measure", type=float, default=10.0, help="measured time [s]")
@@ -68,10 +79,15 @@ def get_args(argv=None):
     parser.add_argument(
         "--out",
         type=str,
-        default=str(Path(GYM_ROOT_DIR) / "logs" / "sweep_results" / "grid_eval.png"),
-        help="figure path; results are saved next to it as .npz",
+        default=None,
+        help="figure path; results are saved next to it as .npz (default: "
+        "logs/sweep_results/grid_eval.png, or <task>.png with --task)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.out is None:
+        name = args.task or "grid_eval"
+        args.out = str(Path(GYM_ROOT_DIR) / "logs" / "sweep_results" / f"{name}.png")
+    return args
 
 
 def named_gaits(names):
@@ -101,8 +117,16 @@ def classify(timing, gaits, tolerance):
     return best if best_distance <= tolerance else "irregular"
 
 
-def rollout(env, runner, speed, args):
-    """Run every robot at `speed`; returns per-step contact, peaks and speed."""
+def rollout(env, runner, speed, args, omega=None):
+    """Run every robot at `speed` (and oscillator frequency `omega`, for a
+    policy trained with osc.omega_range); returns per-step contact, peaks and
+    speed."""
+    if omega is not None:
+        # Fresh episodes, random phases, at the cell's frequency. Robots that
+        # fall and reset draw a new frequency, so it is forced every step.
+        env.reset()
+        env.episode_omega[:] = omega
+        env.osc_omega[:] = omega
     weight = 9.81 * env._backend.link_mass.sum(dim=1, keepdim=True)
     sim_dt = env.dt / env.cfg.control.decimation
     peak = torch.zeros(env.num_envs, len(env.feet_indices))
@@ -124,6 +148,8 @@ def rollout(env, runner, speed, args):
         for i in range(int((args.settle + args.measure) / env.dt)):
             env.commands[:] = 0.0
             env.commands[:, 0] = speed
+            if omega is not None:
+                env.episode_omega[:] = omega
             runner.set_actions(
                 runner.actor_cfg["actions"],
                 runner.get_inference_actions(),
@@ -262,18 +288,34 @@ def plot(results, gait_names, leg_names, path, title):
 if __name__ == "__main__":
     args = get_args()
     results, gait_names, leg_names, sim_hz = {}, None, None, None
+
+    def load(task):
+        play_argv = ["--task", task, "--headless", "--no-keyboard", "--no-record"]
+        play_argv += ["--num_envs", str(args.robots), "--seed", str(args.seed)]
+        play_argv += ["--checkpoint", str(args.checkpoint)]
+        if args.load_run is not None:
+            play_argv += ["--load_run", args.load_run]
+        with torch.no_grad():
+            return play.setup(play.get_play_args(play_argv))
+
+    if args.task is not None:
+        env, runner, load_path = load(args.task)
+        if env.cfg.osc.omega_range is None:
+            raise SystemExit(f"{args.task} was not trained with osc.omega_range")
     for i, omega in enumerate(SWEEP_OMEGAS):
         for j, speed in enumerate(SWEEP_SPEEDS):
-            task = sweep_task_name(speed, omega)
-            if not (Path(GYM_ROOT_DIR) / "logs" / task).is_dir():
-                print(f"{task}: no trained run, skipped")
-                continue
-            play_argv = ["--task", task, "--headless", "--no-keyboard", "--no-record"]
-            play_argv += ["--num_envs", str(args.robots), "--seed", str(args.seed)]
-            play_argv += ["--checkpoint", str(args.checkpoint)]
-            with torch.no_grad():
-                env, runner, load_path = play.setup(play.get_play_args(play_argv))
-                log = rollout(env, runner, speed, args)
+            if args.task is None:
+                task = sweep_task_name(speed, omega)
+                if not (Path(GYM_ROOT_DIR) / "logs" / task).is_dir():
+                    print(f"{task}: no trained run, skipped")
+                    continue
+                env, runner, load_path = load(task)
+                with torch.no_grad():
+                    log = rollout(env, runner, speed, args)
+            else:
+                task = f"{args.task} v{speed:g} w{omega:g}"
+                with torch.no_grad():
+                    log = rollout(env, runner, speed, args, omega=omega)
             legs = [k for k, active in enumerate(env.active_legs.tolist()) if active]
             feet = env.robot_layout.body_groups["feet"]
             leg_names = [feet[k].removesuffix("_foot") for k in legs]
@@ -319,7 +361,10 @@ if __name__ == "__main__":
     )
     checkpoint = "latest" if args.checkpoint == -1 else f"model_{args.checkpoint}"
     title = (
-        f"Front-right locked, one policy per cell ({checkpoint}); {args.robots} robots "
+        f"Front-right locked, "
+        + (f"one policy for all cells ({runs[0, 0]})" if args.task
+           else f"one policy per cell ({checkpoint})")
+        + f"; {args.robots} robots "
         f"per cell from random phases, measured {args.measure:g} s after "
         f"{args.settle:g} s; physics {sim_hz:.0f} Hz"
     )
