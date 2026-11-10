@@ -136,3 +136,45 @@ class Go2OscHindLockedCfg(Go2OscCfg):
 class Go2OscHindLockedRunnerCfg(Go2OscRunnerCfg):
     class runner(Go2OscRunnerCfg.runner):
         experiment_name = "go2osc_hind_locked"
+
+
+# Coarse sweep: one front-locked policy per (commanded speed, oscillator
+# frequency) cell, each trained at that fixed speed and frequency with
+# feedback on, so each cell's gait emerges independently.
+SWEEP_SPEEDS = [0.5, 1.0, 1.5, 2.0, 2.5]  # [m/s]
+SWEEP_OMEGAS = [1.5, 2.25, 3.0, 3.75]  # [Hz]
+SWEEP_ITERATIONS = 400
+
+
+def sweep_task_name(speed, omega):
+    """Task (and experiment) name of a sweep cell, e.g. go2osc_front_locked_v1.5_w3"""
+    return f"go2osc_front_locked_v{speed:g}_w{omega:g}"
+
+
+def sweep_cfgs(speed, omega):
+    """Env and runner config classes for one sweep cell."""
+
+    class Cfg(Go2OscFrontLockedCfg):
+        class osc(Go2OscFrontLockedCfg.osc):
+            # Fixed frequency, independent of the command.
+            omega_min = omega
+            omega_slope = 0.0
+            omega_max = max(omega, Go2OscFrontLockedCfg.osc.omega_max)
+
+        class commands(Go2OscFrontLockedCfg.commands):
+            class ranges(Go2OscFrontLockedCfg.commands.ranges):
+                lin_vel_x = [speed, speed]
+
+    class RunnerCfg(Go2OscFrontLockedRunnerCfg):
+        class runner(Go2OscFrontLockedRunnerCfg.runner):
+            experiment_name = sweep_task_name(speed, omega)
+            max_iterations = SWEEP_ITERATIONS
+
+    return Cfg, RunnerCfg
+
+
+SWEEP_TASKS = {
+    sweep_task_name(speed, omega): sweep_cfgs(speed, omega)
+    for omega in SWEEP_OMEGAS
+    for speed in SWEEP_SPEEDS
+}
