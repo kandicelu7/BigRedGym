@@ -41,6 +41,10 @@ config_dict = {
     "Go2OscFrontLockedCfg": ".go2.go2osc_config",
     "Go2OscHindLockedCfg": ".go2.go2osc_config",
     "Go2OscFrontLockedOmegaCfg": ".go2.go2osc_config",
+    "Go2OscOmegaCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedOmegaCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaStraightCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaRobustCfg": ".go2.go2osc_config",
 }
 
 runner_config_dict = {
@@ -61,6 +65,11 @@ runner_config_dict = {
     "Go2OscFrontLockedRunnerCfg": ".go2.go2osc_config",
     "Go2OscHindLockedRunnerCfg": ".go2.go2osc_config",
     "Go2OscFrontLockedOmegaRunnerCfg": ".go2.go2osc_config",
+    "Go2OscOmegaRunnerCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedOmegaRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaGait2RunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaStraightRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaRobustRunnerCfg": ".go2.go2osc_config",
 }
 
 task_dict = {
@@ -112,6 +121,31 @@ task_dict = {
         "Go2Osc",
         "Go2OscFrontLockedOmegaCfg",
         "Go2OscFrontLockedOmegaRunnerCfg",
+    ],
+    "go2osc_omega": [
+        "Go2Osc",
+        "Go2OscOmegaCfg",
+        "Go2OscOmegaRunnerCfg",
+    ],
+    "go2osc_hind_locked_omega": [
+        "Go2Osc",
+        "Go2OscHindLockedOmegaCfg",
+        "Go2OscHindLockedOmegaRunnerCfg",
+    ],
+    "go2osc_front_locked_omega_gait2": [
+        "Go2Osc",
+        "Go2OscFrontLockedOmegaCfg",
+        "Go2OscFrontLockedOmegaGait2RunnerCfg",
+    ],
+    "go2osc_front_locked_omega_straight": [
+        "Go2Osc",
+        "Go2OscFrontLockedOmegaStraightCfg",
+        "Go2OscFrontLockedOmegaStraightRunnerCfg",
+    ],
+    "go2osc_front_locked_omega_robust": [
+        "Go2Osc",
+        "Go2OscFrontLockedOmegaRobustCfg",
+        "Go2OscFrontLockedOmegaRobustRunnerCfg",
     ],
 }
 

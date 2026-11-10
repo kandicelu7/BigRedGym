@@ -27,6 +27,12 @@ class Go2Osc(Go2):
         self.osc_omega = torch.ones(self.num_envs, 1, device=self.device)
         # Per-episode frequency, used instead of the schedule if osc.omega_range.
         self.episode_omega = torch.ones_like(self.osc_omega)
+        # Recent foot loads, newest first, for the delayed load the
+        # oscillators see (osc.grf_delay_max_steps).
+        self._load_history = torch.zeros(
+            self.num_envs, self.cfg.osc.grf_delay_max_steps + 1, 4, device=self.device
+        )
+        self._load_delay = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.osc_coupling = torch.zeros_like(self.osc_omega)
         self.osc_offset = torch.zeros_like(self.osc_omega)
 
@@ -105,7 +111,9 @@ class Go2Osc(Go2):
     def _step_oscillators(self, dt):
         self.grf = self._foot_load()
         feedback = (
-            self.osc_coupling * self.grf * (torch.cos(self.phase) + self.osc_offset)
+            self.osc_coupling
+            * self._sensed_load()
+            * (torch.cos(self.phase) + self.osc_offset)
         )
         noise = torch.randn_like(self.phase) * self.cfg.osc.process_noise_std
         self.phase_vel = 2 * torch.pi * (self.osc_omega - feedback + noise)
@@ -116,6 +124,19 @@ class Go2Osc(Go2):
         self.phase_obs = torch.cat(
             (torch.cos(self.phase), torch.sin(self.phase)), dim=1
         ) * self.active_legs.repeat(2)
+
+    def _sensed_load(self):
+        """Foot load as the oscillators see it: delayed and noisy if
+        configured, else the exact load (which the gait reward always uses)."""
+        osc = self.cfg.osc
+        if osc.grf_delay_max_steps == 0 and osc.grf_noise_std == 0.0:
+            return self.grf
+        self._load_history = torch.roll(self._load_history, 1, dims=1)
+        self._load_history[:, 0] = self.grf
+        load = self._load_history[torch.arange(self.num_envs, device=self.device), self._load_delay]
+        if osc.grf_noise_std > 0.0:
+            load = load + torch.randn_like(load) * osc.grf_noise_std
+        return torch.clamp(load, 0.0, 1.0)
 
     def _foot_load(self):
         """Vertical foot force normalized by robot weight, clamped to [0, 1]."""
@@ -129,6 +150,10 @@ class Go2Osc(Go2):
         phase = torch.rand_like(self.phase) * 2 * torch.pi
         masked_update(self.phase, phase, reset_mask)
         self.phase_vel.masked_fill_(reset_mask.unsqueeze(1), 0.0)
+        if self.cfg.osc.grf_delay_max_steps > 0:
+            delay = torch.randint_like(self._load_delay, self.cfg.osc.grf_delay_max_steps + 1)
+            self._load_delay[:] = torch.where(reset_mask, delay, self._load_delay)
+            self._load_history[reset_mask] = 0.0
         omega_range = self.cfg.osc.omega_range
         if omega_range is not None:
             low, high = omega_range

@@ -30,6 +30,11 @@ class Go2OscCfg(Go2Cfg):
         # uniformly per robot at each reset and hold it for the episode, so one
         # policy learns every (speed, frequency) pair. None uses the schedule.
         omega_range = None
+        # Foot load as the oscillators see it: Gaussian noise [x body weight]
+        # and a delay drawn per episode from 0..grf_delay_max_steps physics
+        # steps. Zero for both is the exact simulated load.
+        grf_noise_std = 0.0
+        grf_delay_max_steps = 0
         # Standing regime (Eq. 5): [sigma, xi] = [coupling_stop, offset_stop]
         # if |v_x| <= stop_threshold, else [coupling, offset]. Matches the
         # 0.2 m/s below which the base class zeroes sampled commands.
@@ -143,34 +148,97 @@ class Go2OscHindLockedRunnerCfg(Go2OscRunnerCfg):
         experiment_name = "go2osc_hind_locked"
 
 
-class Go2OscFrontLockedOmegaCfg(Go2OscFrontLockedCfg):
-    """Front-locked, with the oscillator frequency drawn per episode.
+def omega_cfgs(base_cfg, base_runner_cfg, experiment_name):
+    """Variant of a task with the oscillator frequency drawn per episode.
 
     One policy covers the whole (speed, frequency) grid of the sweep below, so
     gait differences across the grid come from speed and frequency rather than
     from separate training runs. Evaluate with
-    scripts/grid_eval.py --task go2osc_front_locked_omega.
+    scripts/grid_eval.py --task <experiment_name>.
     """
 
-    class osc(Go2OscFrontLockedCfg.osc):
-        omega_range = [1.25, 4.0]  # [Hz], margin around SWEEP_OMEGAS
+    class Cfg(base_cfg):
+        class osc(base_cfg.osc):
+            omega_range = [1.25, 4.0]  # [Hz], margin around SWEEP_OMEGAS
 
-    class commands(Go2OscFrontLockedCfg.commands):
-        class ranges(Go2OscFrontLockedCfg.commands.ranges):
-            # Margin around SWEEP_SPEEDS; above the 0.2 m/s standing cutoff.
-            lin_vel_x = [0.25, 2.75]  # [m/s]
+        class commands(base_cfg.commands):
+            class ranges(base_cfg.commands.ranges):
+                # Margin around SWEEP_SPEEDS; above the 0.2 m/s standing cutoff.
+                lin_vel_x = [0.25, 2.75]  # [m/s]
+
+    class RunnerCfg(base_runner_cfg):
+        class actor(base_runner_cfg.actor):
+            obs = base_runner_cfg.actor.obs + ["osc_omega"]
+
+        class critic(base_runner_cfg.critic):
+            obs = base_runner_cfg.critic.obs + ["osc_omega"]
+
+        class runner(base_runner_cfg.runner):
+            max_iterations = 1500
+
+    RunnerCfg.runner.experiment_name = experiment_name
+    return Cfg, RunnerCfg
 
 
-class Go2OscFrontLockedOmegaRunnerCfg(Go2OscFrontLockedRunnerCfg):
-    class actor(Go2OscFrontLockedRunnerCfg.actor):
-        obs = Go2OscFrontLockedRunnerCfg.actor.obs + ["osc_omega"]
+# The three robots of the study, each over the whole (speed, frequency) grid.
+Go2OscOmegaCfg, Go2OscOmegaRunnerCfg = omega_cfgs(
+    Go2OscCfg, Go2OscRunnerCfg, "go2osc_omega"
+)
+Go2OscFrontLockedOmegaCfg, Go2OscFrontLockedOmegaRunnerCfg = omega_cfgs(
+    Go2OscFrontLockedCfg, Go2OscFrontLockedRunnerCfg, "go2osc_front_locked_omega"
+)
+Go2OscHindLockedOmegaCfg, Go2OscHindLockedOmegaRunnerCfg = omega_cfgs(
+    Go2OscHindLockedCfg, Go2OscHindLockedRunnerCfg, "go2osc_hind_locked_omega"
+)
 
-    class critic(Go2OscFrontLockedRunnerCfg.critic):
-        obs = Go2OscFrontLockedRunnerCfg.critic.obs + ["osc_omega"]
 
-    class runner(Go2OscFrontLockedRunnerCfg.runner):
-        experiment_name = "go2osc_front_locked_omega"
-        max_iterations = 1500
+# Front-locked variants.
+class Go2OscFrontLockedOmegaGait2RunnerCfg(Go2OscFrontLockedOmegaRunnerCfg):
+    """Gait reward doubled, so following the oscillators is worth more and
+    the frequency may have more say over the gait."""
+
+    class critic(Go2OscFrontLockedOmegaRunnerCfg.critic):
+        class reward(Go2OscFrontLockedOmegaRunnerCfg.critic.reward):
+            class weights(Go2OscFrontLockedOmegaRunnerCfg.critic.reward.weights):
+                gait = 2.0
+
+    class runner(Go2OscFrontLockedOmegaRunnerCfg.runner):
+        experiment_name = "go2osc_front_locked_omega_gait2"
+
+
+class Go2OscFrontLockedOmegaStraightCfg(Go2OscFrontLockedOmegaCfg):
+    """Locked leg held straight, as a passive peg, instead of tucked."""
+
+    class leg_lock(Go2OscFrontLockedOmegaCfg.leg_lock):
+        pose = "straight"
+
+
+class Go2OscFrontLockedOmegaStraightRunnerCfg(Go2OscFrontLockedOmegaRunnerCfg):
+    class runner(Go2OscFrontLockedOmegaRunnerCfg.runner):
+        experiment_name = "go2osc_front_locked_omega_straight"
+
+
+class Go2OscFrontLockedOmegaRobustCfg(Go2OscFrontLockedOmegaCfg):
+    """First step toward hardware: the oscillators run on a noisy, delayed
+    foot load (as from real foot sensors), with wider friction and mass
+    randomization. The gait reward still uses the true load."""
+
+    class osc(Go2OscFrontLockedOmegaCfg.osc):
+        grf_noise_std = 0.1  # [x body weight]
+        grf_delay_max_steps = 2  # per-episode delay of 0..2 physics steps
+
+    class domain_randomization(Go2OscFrontLockedOmegaCfg.domain_randomization):
+        class startup(Go2OscFrontLockedOmegaCfg.domain_randomization.startup):
+            contact_friction_range = [0.3, 1.2]
+            link_mass_scale_range = [0.85, 1.15]
+
+
+class Go2OscFrontLockedOmegaRobustRunnerCfg(Go2OscFrontLockedOmegaRunnerCfg):
+    class actor(Go2OscFrontLockedOmegaRunnerCfg.actor):
+        add_noise = True  # sensor noise on the policy's observations
+
+    class runner(Go2OscFrontLockedOmegaRunnerCfg.runner):
+        experiment_name = "go2osc_front_locked_omega_robust"
 
 
 # Coarse sweep: one front-locked policy per (commanded speed, oscillator

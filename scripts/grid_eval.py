@@ -27,6 +27,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.ticker
 from matplotlib.colors import ListedColormap
 
 import footfall
@@ -56,6 +57,12 @@ def get_args(argv=None):
     parser.add_argument("--robots", type=int, default=64, help="robots per cell")
     parser.add_argument("--settle", type=float, default=10.0, help="settling time [s]")
     parser.add_argument("--measure", type=float, default=10.0, help="measured time [s]")
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=2.5,
+        help="gait-over-time figure: classify every this many seconds [s]",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--contact_threshold",
@@ -95,7 +102,7 @@ def named_gaits(names):
     in fractions of the reference leg's stride."""
     ref, a, b = names
     return [
-        ("hop (all together)", (0.0, 0.0)),
+        ("hop", (0.0, 0.0)),  # all three legs together
         (f"{ref}+{b} | {a}", (0.5, 0.0)),
         (f"{ref}+{a} | {b}", (0.0, 0.5)),
         (f"{a}+{b} | {ref}", (0.5, 0.5)),
@@ -142,10 +149,12 @@ def rollout(env, runner, speed, args, omega=None):
 
     env._post_physics_step = hooked_post_physics_step
     fell = torch.zeros(env.num_envs, dtype=torch.bool)
-    contact, step_peak, vx = [], [], []
+    contact, step_peak, vx, contact_all = [], [], [], []
     n_settle = int(args.settle / env.dt)
+    n_steps = int((args.settle + args.measure) / env.dt)
+    fell_at = np.full(env.num_envs, n_steps)
     try:
-        for i in range(int((args.settle + args.measure) / env.dt)):
+        for i in range(n_steps):
             env.commands[:] = 0.0
             env.commands[:, 0] = speed
             if omega is not None:
@@ -160,20 +169,32 @@ def rollout(env, runner, speed, args, omega=None):
                 impulse.zero_()
             env.step()
             fell |= env.terminated
+            fell_at[env.terminated.numpy() & (fell_at == n_steps)] = i
+            load = env.contact_forces[:, env.feet_indices, 2] / weight
+            contact_all.append((load > args.contact_threshold).numpy().copy())
             if i >= n_settle:
-                load = env.contact_forces[:, env.feet_indices, 2] / weight
-                contact.append((load > args.contact_threshold).numpy().copy())
+                contact.append(contact_all[-1])
                 step_peak.append((peak / weight).numpy().copy())
                 vx.append(env.base_lin_vel[:, 0].numpy().copy())
     finally:
         env._post_physics_step = post_physics_step
     return {
         "fell": fell.numpy(),
+        "fell_at": fell_at,  # [robot], first step fallen (n_steps if never)
+        "contact_all": np.stack(contact_all, axis=1),  # [robot, step, foot], whole run
         "contact": np.stack(contact, axis=1),  # [robot, step, foot]
         "peak": np.stack(step_peak, axis=1),  # [robot, step, foot], x body weight
         "impulse": impulse.numpy().copy(),  # [robot, foot], measured window
         "vx": np.stack(vx, axis=1).mean(axis=1),  # [robot]
     }
+
+
+def circular_mean(fractions):
+    """Mean over robots of stride fractions, wrapped (0.95 and 0.05 average to 0)."""
+    angles = np.exp(2j * np.pi * fractions)
+    valid = ~np.isnan(fractions)
+    mean = np.where(valid, angles, 0).sum(axis=0) / np.maximum(valid.sum(axis=0), 1)
+    return np.where(valid.any(axis=0), np.angle(mean) / (2 * np.pi) % 1.0, np.nan)
 
 
 def cell_metrics(log, speed, legs, names, dt, args):
@@ -212,17 +233,113 @@ def cell_metrics(log, speed, legs, names, dt, args):
         "speed_ratio": log["vx"][ok].mean() / speed if ok.any() else np.nan,
         "fall_rate": log["fell"].mean(),
         "gait_counts": counts,
-        "timing": np.nanmean(np.array(timings), axis=0) if timings else np.full(2, np.nan),
+        "timing": circular_mean(np.array(timings)) if timings else np.full(2, np.nan),
         "peak_force": np.nanmean(peaks) if peaks else np.nan,
         "leg_shares": shares.mean(axis=0) if ok.any() else np.full(3, np.nan),
         "unevenness": (shares.std(axis=1) / shares.mean(axis=1)).mean() if ok.any() else np.nan,
     }, names_list
 
 
-def annotate(ax, grid, fmt):
+def gait_shares_over_time(log, legs, names, gait_names, dt, args):
+    """Share of robots in each gait every `args.interval` s over the whole run,
+    as in Zhang et al. Fig. 5: RPD averaged over each robot's last two strides,
+    nearest named gait within `gait_tolerance`, else irregular."""
+    from gait_over_time import classify, last_strides_rpd  # avoids an import cycle
+
+    gaits = [(n, tuple(2 * np.pi * np.asarray(r))) for n, r in named_gaits(names)]
+    labels = gait_names + ["fell"]
+    min_air = int(round(0.03 / dt))
+    max_stride = int(round(2.0 / dt))
+    times = np.arange(args.interval, args.settle + args.measure + 1e-9, args.interval)
+    shares = np.zeros((len(times), len(labels)))
+    contact = log["contact_all"]
+    for t, time in enumerate(times):
+        end = min(int(round(time / dt)), contact.shape[1])
+        for robot in range(contact.shape[0]):
+            if log["fell_at"][robot] < end:
+                label = "fell"
+            else:
+                rpd = last_strides_rpd(
+                    contact[robot, :end], legs[0], legs[1:], min_air, max_stride, 2
+                )
+                label = classify(rpd, gaits, 2 * np.pi * args.gait_tolerance)
+                label = "irregular" if label == "transition" else label
+            shares[t, labels.index(label)] += 1
+    return times, shares / contact.shape[0], labels
+
+
+# Reference categorical palette (fixed order) for the named gaits; greys for
+# irregular, not stepping and fell, which are not gaits.
+GAIT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
+NON_GAIT_COLORS = {"irregular": "#c8c7c0", "not stepping": "#8a8980", "fell": "#3d3d3a"}
+
+
+def gait_colors(labels):
+    named = [label for label in labels if label not in NON_GAIT_COLORS]
+    colors = dict(zip(named, GAIT_COLORS))
+    colors.update(NON_GAIT_COLORS)
+    return [colors[label] for label in labels]
+
+
+def plot_over_time(results, labels, path, title, settle):
+    """Small multiples: gait share over time per (speed, frequency) cell."""
+    speeds, omegas = SWEEP_SPEEDS, SWEEP_OMEGAS
+    fig, axes = plt.subplots(
+        len(omegas), len(speeds), figsize=(2.6 * len(speeds) + 2.2, 1.9 * len(omegas)),
+        sharex=True, sharey=True, squeeze=False,
+    )
+    colors = gait_colors(labels)
+    used = np.zeros(len(labels), dtype=bool)
+    for (i, j), cell in results.items():
+        used |= cell["time_shares"].max(axis=0) > 0
+    for row, i in enumerate(reversed(range(len(omegas)))):  # high frequency on top
+        for j in range(len(speeds)):
+            ax = axes[row, j]
+            cell = results.get((i, j))
+            if cell is None:
+                ax.text(0.5, 0.5, "not trained", ha="center", va="center",
+                        transform=ax.transAxes, fontsize=8, color="#6b6a64")
+            else:
+                times, shares = cell["times"], cell["time_shares"]
+                ax.stackplot(times, shares[:, used].T,
+                             colors=[c for c, u in zip(colors, used) if u],
+                             edgecolor="white", linewidth=0.6)
+                ax.set_xlim(times[0], times[-1])
+                ax.axvline(settle, color="#3d3d3a", lw=0.8, ls="--")
+            ax.set_ylim(0, 1)
+            for side in ("top", "right"):
+                ax.spines[side].set_visible(False)
+            ax.tick_params(labelsize=7, colors="#6b6a64")
+            if row == 0:
+                ax.set_title(f"{speeds[j]:g} m/s", fontsize=9)
+            if j == 0:
+                ax.set_ylabel(f"{omegas[i]:g} Hz\nshare", fontsize=8)
+            if row == len(omegas) - 1:
+                ax.set_xlabel("time [s]", fontsize=8)
+    axes[0, 0].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c, u in zip(colors, used) if u]
+    fig.legend(handles, [l for l, u in zip(labels, used) if u], loc="center right",
+               fontsize=8, frameon=False, title="gait", title_fontsize=8)
+    fig.suptitle(title + f"\ncolumns: commanded speed, rows: oscillator frequency; "
+                 f"dashed line: end of settling ({settle:g} s)", fontsize=9)
+    fig.tight_layout(rect=(0, 0, 1 - 2.0 / fig.get_figwidth(), 1))
+    fig.savefig(path, dpi=130)
+    print(f"Saved gait-over-time grid to {path}")
+
+
+def readable_text_color(rgb):
+    """Black on light backgrounds, white on dark ones."""
+    r, g, b = rgb[:3]
+    return "black" if 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 else "white"
+
+
+def annotate(ax, grid, fmt, color="white", image=None):
+    """Cell values; with `image`, black or white per cell for contrast."""
     for (row, col), value in np.ndenumerate(grid):
         if not np.isnan(value):
-            ax.text(col, row, fmt(value), ha="center", va="center", fontsize=8, color="white")
+            if image is not None:
+                color = readable_text_color(image.to_rgba(value))
+            ax.text(col, row, fmt(value), ha="center", va="center", fontsize=8, color=color)
 
 
 def plot(results, gait_names, leg_names, path, title):
@@ -237,8 +354,9 @@ def plot(results, gait_names, leg_names, path, title):
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 9))
     panels = [
-        ("speed_ratio", "measured / commanded speed", "RdBu", (0, 2), "{:.2f}"),
-        ("fall_rate", "fall rate", "Reds", (0, 1), "{:.0%}"),
+        # Ranges fitted to the data (see below) so small differences show.
+        ("speed_ratio", "measured / commanded speed", "RdBu", None, "{:.2f}"),
+        ("fall_rate", "fall rate", "Reds", None, "{:.0%}"),
         (None, "dominant gait (share of robots)", None, None, None),
         ("peak_force", "peak landing force [x body weight]", "plasma", None, "{:.2f}"),
         ("unevenness", "uneven load across legs [CV, 0 = even]", "cividis", None, "{:.2f}"),
@@ -248,13 +366,16 @@ def plot(results, gait_names, leg_names, path, title):
         if key is None:  # categorical gait map
             dominant = grid("gait_counts", lambda c: np.argmax(c) if c.sum() else np.nan)
             share = grid("gait_counts", lambda c: c.max() / c.sum() if c.sum() else np.nan)
-            colors = plt.cm.tab10(np.arange(len(gait_names)))
+            colors = gait_colors(gait_names)
             ax.imshow(dominant, cmap=ListedColormap(colors), vmin=-0.5,
                       vmax=len(gait_names) - 0.5, origin="lower", aspect="auto")
             for (row, col), value in np.ndenumerate(dominant):
                 if not np.isnan(value):
+                    rgb = matplotlib.colors.to_rgb(colors[int(value)])
+                    light = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] > 0.5
                     ax.text(col, row, f"{gait_names[int(value)]}\n{share[row, col]:.0%}",
-                            ha="center", va="center", fontsize=7, color="white")
+                            ha="center", va="center", fontsize=7,
+                            color="#1a1a19" if light else "white")
             handles = [plt.Rectangle((0, 0), 1, 1, color=colors[k]) for k in range(len(gait_names))]
             ax.legend(handles, gait_names, fontsize=6, loc="upper left",
                       bbox_to_anchor=(1.0, 1.0), frameon=False)
@@ -270,10 +391,20 @@ def plot(results, gait_names, leg_names, path, title):
         else:
             values = grid(key)
             vmin, vmax = limits or (np.nanmin(values), np.nanmax(values))
+            contrast = key in ("speed_ratio", "fall_rate")
+            if key == "speed_ratio":
+                # Diverging around perfect tracking (1.0), symmetric so equal
+                # over- and undershoot get equal color strength.
+                spread = max(np.nanmax(np.abs(values - 1.0)), 0.05)
+                vmin, vmax = 1.0 - spread, 1.0 + spread
+            elif key == "fall_rate":
+                vmin, vmax = 0.0, max(np.nanmax(values), 0.05)
             image = ax.imshow(values, cmap=cmap, vmin=vmin, vmax=vmax,
                               origin="lower", aspect="auto")
-            fig.colorbar(image, ax=ax, shrink=0.85)
-            annotate(ax, values, fmt.format)
+            bar = fig.colorbar(image, ax=ax, shrink=0.85)
+            if key == "fall_rate":
+                bar.ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+            annotate(ax, values, fmt.format, image=image if contrast else None)
         ax.set_title(label, fontsize=10)
         ax.set_xticks(range(len(speeds)), [f"{v:g}" for v in speeds])
         ax.set_yticks(range(len(omegas)), [f"{w:g}" for w in omegas])
@@ -321,6 +452,9 @@ if __name__ == "__main__":
             leg_names = [feet[k].removesuffix("_foot") for k in legs]
             sim_hz = 1.0 / (env.dt / env.cfg.control.decimation)
             cell, gait_names = cell_metrics(log, speed, legs, leg_names, env.dt, args)
+            cell["times"], cell["time_shares"], time_labels = gait_shares_over_time(
+                log, legs, leg_names, gait_names, env.dt, args
+            )
             cell["run"] = f"{Path(load_path).parent.name}/{Path(load_path).stem}"
             results[(i, j)] = cell
             counts = cell["gait_counts"]
@@ -345,6 +479,8 @@ if __name__ == "__main__":
     saved["gait_counts"] = np.zeros(shape + (len(gait_names),))
     saved["timing"] = np.full(shape + (2,), np.nan)
     saved["leg_shares"] = np.full(shape + (3,), np.nan)
+    times = next(iter(results.values()))["times"]
+    saved["time_shares"] = np.full(shape + (len(times), len(time_labels)), np.nan)
     runs = np.full(shape, "", dtype=object)
     for (i, j), cell in results.items():
         for key in saved:
@@ -355,6 +491,8 @@ if __name__ == "__main__":
         speeds=np.array(SWEEP_SPEEDS),
         omegas=np.array(SWEEP_OMEGAS),
         gait_names=np.array(gait_names),
+        times=times,
+        time_labels=np.array(time_labels),
         leg_names=np.array(leg_names),
         runs=runs.astype(str),
         **saved,
@@ -369,3 +507,5 @@ if __name__ == "__main__":
         f"{args.settle:g} s; physics {sim_hz:.0f} Hz"
     )
     plot(results, gait_names, leg_names, path, title)
+    plot_over_time(results, time_labels,
+                   path.with_name(path.stem + "_over_time.png"), title, args.settle)
