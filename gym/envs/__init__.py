@@ -40,6 +40,7 @@ config_dict = {
     "Go2OscCfg": ".go2.go2osc_config",
     "Go2OscFrontLockedCfg": ".go2.go2osc_config",
     "Go2OscHindLockedCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedFixedCfg": ".go2.go2osc_config",
 }
 
 runner_config_dict = {
@@ -59,6 +60,7 @@ runner_config_dict = {
     "Go2OscRunnerCfg": ".go2.go2osc_config",
     "Go2OscFrontLockedRunnerCfg": ".go2.go2osc_config",
     "Go2OscHindLockedRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedFixedRunnerCfg": ".go2.go2osc_config",
 }
 
 task_dict = {
@@ -105,6 +107,11 @@ task_dict = {
         "Go2Osc",
         "Go2OscHindLockedCfg",
         "Go2OscHindLockedRunnerCfg",
+    ],
+    "go2osc_front_locked_fixed": [
+        "Go2Osc",
+        "Go2OscFrontLockedFixedCfg",
+        "Go2OscFrontLockedFixedRunnerCfg",
     ],
 }
 

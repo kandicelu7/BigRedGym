@@ -136,3 +136,31 @@ class Go2OscHindLockedCfg(Go2OscCfg):
 class Go2OscHindLockedRunnerCfg(Go2OscRunnerCfg):
     class runner(Go2OscRunnerCfg.runner):
         experiment_name = "go2osc_hind_locked"
+
+
+class Go2OscFrontLockedFixedCfg(Go2OscFrontLockedCfg):
+    """Front-locked, with the gait fixed by the oscillators (Zhang's ORC(110)).
+
+    No load feedback, so each leg's phase runs at exactly omega and the phase
+    gaps between legs keep their random initial values: every episode trains
+    a different fixed gait, and the policy learns to walk any imposed gait.
+    """
+
+    class osc(Go2OscFrontLockedCfg.osc):
+        # Small noise lets gaits drift a little within an episode, for
+        # robustness; set it to 0 when evaluating a specific gait.
+        process_noise_std = 0.1
+        # No feedback, and no standing regime pulling the phases together.
+        coupling = 0.0
+        coupling_stop = 0.0
+
+    class commands(Go2OscFrontLockedCfg.commands):
+        class ranges(Go2OscFrontLockedCfg.commands.ranges):
+            # Moving speeds only, matching the planned gait sweep.
+            lin_vel_x = [0.5, 3.0]  # min max [m/s]
+
+
+class Go2OscFrontLockedFixedRunnerCfg(Go2OscRunnerCfg):
+    class runner(Go2OscRunnerCfg.runner):
+        experiment_name = "go2osc_front_locked_fixed"
+        max_iterations = 1000
