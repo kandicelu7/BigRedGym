@@ -65,6 +65,13 @@ def get_play_args(argv=None):
         "alongside keyboard teleop)",
     )
     parser.add_argument(
+        "--no_track",
+        action="store_true",
+        default=False,
+        help="do not keep the MuJoCo viewer camera on the robot (tasks that "
+        "set cfg.viewer.track_robot follow it by default)",
+    )
+    parser.add_argument(
         "--keyboard",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -96,6 +103,8 @@ def setup(args):
     env_cfg.init_state.reset_mode = "reset_to_basic"
     if hasattr(env_cfg, "viewer"):
         env_cfg.viewer.show_ui = args.viewer_ui
+        if args.no_track:
+            env_cfg.viewer.track_robot = False
 
     if args.seed is not None:
         env_cfg.seed = args.seed

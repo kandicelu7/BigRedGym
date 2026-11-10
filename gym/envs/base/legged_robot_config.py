@@ -153,6 +153,8 @@ class LeggedRobotCfg(BaseConfig):
         # gym/utils/interfaces/teleop_bindings.py).  Off by default;
         # scripts/play.py --viewer_ui turns them back on.
         show_ui = False
+        # MuJoCo passive viewer only: keep the camera on the viewed robot.
+        track_robot = False
 
     class mujoco(MuJoCoCfg):
         # Warp truncates constraints if this per-world buffer overflows.

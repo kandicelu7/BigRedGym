@@ -42,6 +42,7 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         # Viewer (created lazily on first render call)
         self._viewer = None
         self._show_ui = False  # overridden from cfg.viewer.show_ui in setup()
+        self._track_robot = False  # overridden from cfg.viewer.track_robot
         self._viewer_key_callback = None
         self._viewer_overlay_fn = None  # called each render() before sync()
         self._randomize_contact_friction = False
@@ -159,6 +160,9 @@ class MuJocoCPUBackend(MuJocoBackendBase):
 
         viewer_cfg = getattr(cfg, "viewer", None)
         self._show_ui = bool(getattr(viewer_cfg, "show_ui", False))
+        self._track_robot = bool(
+            getattr(viewer_cfg, "track_robot", False)
+        ) and not getattr(cfg.asset, "fix_base_link", True)
 
         # Allocate PyTorch state tensors
         self._dof_state_t = torch.zeros(num_envs, self._num_dof, 2, device=device)
@@ -344,6 +348,13 @@ class MuJocoCPUBackend(MuJocoBackendBase):
                 show_left_ui=self._show_ui,
                 show_right_ui=self._show_ui,
             )
+            if self._track_robot:
+                # Follow the floating base (the first body after the world);
+                # the mouse still orbits and zooms around it.
+                with self._viewer.lock():
+                    self._viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                    self._viewer.cam.trackbodyid = 1
+                    self._viewer.cam.distance = 2.5
         if self._viewer.is_running():
             if self._viewer_overlay_fn is not None:
                 self._viewer_overlay_fn(self._viewer)
