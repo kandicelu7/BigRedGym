@@ -175,9 +175,13 @@ for task_name, (class_name, config_name, runner_config_name) in task_dict.items(
 # Coarse (speed, frequency) sweep of front-locked policies, one task per cell.
 # Generated, so not in the literal dicts above: --original_cfg cannot rebuild
 # these tasks from a run's snapshot, but their configs are fixed per name.
-from .go2.go2osc_config import SWEEP_TASKS  # noqa: E402
+from .go2.go2osc_config import STUDY_TASKS, SWEEP_TASKS  # noqa: E402
 
-for task_name, (config_class, runner_config_class) in SWEEP_TASKS.items():
+# Reward study (go2osc_config.STUDY_SETTINGS), generated the same way.
+for task_name, (config_class, runner_config_class) in {
+    **SWEEP_TASKS,
+    **STUDY_TASKS,
+}.items():
     task_registry.register(
         task_name,
         _loaded["Go2Osc"],

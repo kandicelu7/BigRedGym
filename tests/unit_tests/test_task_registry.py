@@ -45,7 +45,10 @@ LEGACY_ASSET_FIELDS = {
 
 
 def test_declared_tasks_register_with_declared_components():
-    expected_names = set(envs.task_dict)
+    # Literal declarations plus the generated go2osc sweep and study tasks.
+    from gym.envs.go2.go2osc_config import STUDY_TASKS, SWEEP_TASKS
+
+    expected_names = set(envs.task_dict) | set(SWEEP_TASKS) | set(STUDY_TASKS)
 
     assert set(task_registry.task_classes) == expected_names
     assert set(task_registry.env_cfgs) == expected_names

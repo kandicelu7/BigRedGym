@@ -1,7 +1,14 @@
 import torch
 
 from gym.envs.go2.go2 import Go2
+from gym.utils.math.simple_math import wrap_to_pi
 from gym.utils.sampling import masked_update
+
+
+def yaw_of(quat_xyzw):
+    """Heading [rad] of quaternions in the task layer's [x, y, z, w] order."""
+    x, y, z, w = quat_xyzw.unbind(-1)
+    return torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
 class Go2Osc(Go2):
@@ -36,6 +43,18 @@ class Go2Osc(Go2):
         self.osc_coupling = torch.zeros_like(self.osc_omega)
         self.osc_offset = torch.zeros_like(self.osc_omega)
 
+        # State for the even-load, peak-load and heading rewards. Updated
+        # every step whether or not those rewards are weighted (reward
+        # functions only run when they are).
+        # Each foot's load [x body weight] averaged over about one stride.
+        self.stride_load = torch.zeros_like(self.phase)
+        # Largest load of each foot during the current control step, over all
+        # physics substeps (a landing impact lasts only a few substeps).
+        self.peak_load = torch.zeros_like(self.phase)
+        # Heading the robot should keep [rad]: its heading at reset, turned
+        # by any yaw-rate command.
+        self.heading_target = torch.zeros(self.num_envs, device=self.device)
+
     def _init_leg_lock(self):
         lock = self.cfg.leg_lock
         foot_names = self.robot_layout.body_groups["feet"]
@@ -68,6 +87,7 @@ class Go2Osc(Go2):
 
     def _pre_decimation_step(self):
         super()._pre_decimation_step()
+        self.peak_load.zero_()
         # The policy has no authority over the locked leg; zero its targets so
         # observations and action-rate penalties ignore it.
         self.dof_pos_target[:, self._locked_dofs] = 0.0
@@ -106,7 +126,25 @@ class Go2Osc(Go2):
 
     def _post_physics_step(self):
         super()._post_physics_step()
-        self._step_oscillators(self.dt / self.cfg.control.decimation)
+        sim_dt = self.dt / self.cfg.control.decimation
+        self._step_oscillators(sim_dt)
+        self._update_load_stats(sim_dt)
+
+    def _post_decimation_step(self):
+        super()._post_decimation_step()
+        self.heading_target = wrap_to_pi(
+            self.heading_target + self.commands[:, 2] * self.dt
+        )
+
+    def _update_load_stats(self, sim_dt):
+        """Per-foot load averaged over about one oscillator period (an
+        exponential moving average with time constant 1 / omega), and the
+        peak load of the current control step. Unclamped, unlike self.grf."""
+        weight = 9.81 * self._backend.link_mass.sum(dim=1, keepdim=True)
+        load = self.contact_forces[:, self.feet_indices, 2].clamp(min=0.0) / weight
+        alpha = torch.clamp(sim_dt * self.osc_omega, max=1.0)
+        self.stride_load += alpha * (load - self.stride_load)
+        torch.maximum(self.peak_load, load, out=self.peak_load)
 
     def _step_oscillators(self, dt):
         self.grf = self._foot_load()
@@ -160,6 +198,13 @@ class Go2Osc(Go2):
             omega = low + (high - low) * torch.rand_like(self.episode_omega)
             masked_update(self.episode_omega, omega, reset_mask)
             masked_update(self.osc_omega, omega, reset_mask)
+        # Start from an even split of the body weight over the active legs.
+        even = self.active_legs / self.active_legs.sum()
+        self.stride_load[reset_mask] = even
+        self.peak_load[reset_mask] = 0.0
+        self.heading_target = torch.where(
+            reset_mask, yaw_of(self.root_states[:, 3:7]), self.heading_target
+        )
         self._update_phase_obs()
 
     def reset_to_basic(self, reset_mask):
@@ -187,3 +232,29 @@ class Go2Osc(Go2):
         return -torch.sum(
             self.grf * torch.sin(self.phase) * self.active_legs, dim=1
         )
+
+    def _reward_even_load(self):
+        """Penalize uneven load over the active legs, averaged over about a
+        stride: minus the squared coefficient of variation of each leg's
+        share (0 when even; n - 1 with all weight on one of n legs).
+        Per-stride, so gaits whose legs land at different times are not
+        penalized for it."""
+        load = self.stride_load * self.active_legs
+        share = load / load.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        n = self.active_legs.sum()
+        deviation = (share - 1.0 / n) * self.active_legs
+        return -n * torch.sum(deviation.square(), dim=1)
+
+    def _reward_peak_load(self):
+        """Penalize hard landings: squared excess of each active foot's peak
+        load in this control step over reward_settings.peak_load_threshold
+        [x body weight]."""
+        excess = self.peak_load - self.cfg.reward_settings.peak_load_threshold
+        return -torch.sum(excess.clamp(min=0.0).square() * self.active_legs, dim=1)
+
+    def _reward_heading(self):
+        """Keep the heading the robot had at reset (turned by any yaw-rate
+        command), so it runs straight instead of drifting in a curve.
+        Squared exponential with width reward_settings.heading_sigma [rad]."""
+        error = wrap_to_pi(yaw_of(self.base_quat) - self.heading_target)
+        return torch.exp(-error.square() / self.cfg.reward_settings.heading_sigma**2)

@@ -76,6 +76,11 @@ class Go2OscCfg(Go2Cfg):
 
     class reward_settings(Go2Cfg.reward_settings):
         base_height_target = 0.25
+        # Foot load [x body weight] above which a landing is penalized
+        # (peak_load reward); 1.0 is the robot's weight on a single foot.
+        peak_load_threshold = 1.0
+        # Heading error [rad] at which the heading reward falls to 1/e.
+        heading_sigma = 0.25
 
     class scaling(Go2Cfg.scaling):
         phase_vel = 2 * 3.14159 * 4.0
@@ -119,6 +124,10 @@ class Go2OscRunnerCfg(Go2RunnerCfg):
                 action_rate2 = 0.025
                 collision = 0.5
                 gait = 1.0
+                # Off by default; set in the reward study's tasks.
+                even_load = 0.0
+                peak_load = 0.0
+                heading = 0.0
 
             class termination_weight:
                 termination = 0.15
@@ -281,3 +290,48 @@ SWEEP_TASKS = {
     for omega in SWEEP_OMEGAS
     for speed in SWEEP_SPEEDS
 }
+
+
+# Reward study: how reward weights shape the gaits a front-locked policy
+# learns over the whole (speed, frequency) grid. One factor at a time around
+# a shared baseline, five seeds per setting (train.py --seed 0..4).
+# Every setting, including the baseline, also rewards holding the initial
+# heading: without it the three-legged robots run in curves (30-130 degrees
+# of turn in 10 s), which the yaw-rate reward barely notices.
+STUDY_BASE_WEIGHTS = {"gait": 1.0, "tracking_lin_vel": 4.0, "heading": 2.0}
+STUDY_SETTINGS = {
+    "baseline": {},
+    # Gait reward x1.5, x2.
+    "gait1.5": {"gait": 1.5},
+    "gait2": {"gait": 2.0},
+    # Velocity tracking and heading together ("go where commanded") x1.5, x2.
+    "track1.5": {"tracking_lin_vel": 6.0, "heading": 3.0},
+    "track2": {"tracking_lin_vel": 8.0, "heading": 4.0},
+}
+STUDY_SEEDS = range(5)
+
+
+def study_task_name(setting):
+    """Task (and experiment) name of a reward-study setting."""
+    return f"go2osc_study_{setting}"
+
+
+def study_cfgs(setting):
+    """Env and runner config classes for one reward-study setting."""
+    weights = {**STUDY_BASE_WEIGHTS, **STUDY_SETTINGS[setting]}
+
+    class RunnerCfg(Go2OscFrontLockedOmegaRunnerCfg):
+        class critic(Go2OscFrontLockedOmegaRunnerCfg.critic):
+            class reward(Go2OscFrontLockedOmegaRunnerCfg.critic.reward):
+                class weights(Go2OscFrontLockedOmegaRunnerCfg.critic.reward.weights):
+                    pass
+
+        class runner(Go2OscFrontLockedOmegaRunnerCfg.runner):
+            experiment_name = study_task_name(setting)
+
+    for name, value in weights.items():
+        setattr(RunnerCfg.critic.reward.weights, name, value)
+    return Go2OscFrontLockedOmegaCfg, RunnerCfg
+
+
+STUDY_TASKS = {study_task_name(s): study_cfgs(s) for s in STUDY_SETTINGS}

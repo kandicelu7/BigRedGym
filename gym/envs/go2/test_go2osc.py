@@ -83,3 +83,59 @@ def test_omega_range_holds_episode_frequency_regardless_of_speed(monkeypatch):
     task.episode_omega = torch.tensor([[1.5], [3.0], [3.75]])
     task._update_osc_params()
     torch.testing.assert_close(task.osc_omega, task.episode_omega)
+
+
+def test_even_load_is_zero_when_legs_share_equally_and_ignores_locked_leg():
+    active = torch.tensor([True, False, True, True])
+    task = make_task(num_envs=3, active_legs=active)
+    task.stride_load = torch.tensor(
+        [
+            [0.3, 5.0, 0.3, 0.3],  # even over the active legs
+            [0.9, 0.0, 0.0, 0.0],  # one leg carries everything
+            [0.4, 0.0, 0.4, 0.1],
+        ]
+    )
+    reward = task._reward_even_load()
+    # Minus the squared coefficient of variation of the active legs' shares.
+    shares = torch.tensor([0.4, 0.4, 0.1]) / 0.9
+    cv2 = 3 * torch.sum((shares - 1 / 3) ** 2)
+    torch.testing.assert_close(reward, torch.stack([torch.tensor(0.0), torch.tensor(-2.0), -cv2]))
+
+
+def test_stride_load_averages_over_an_oscillator_period():
+    task = make_task(foot_force=98.1)  # a load of 1 on every foot
+    task.stride_load = torch.zeros(1, 4)
+    task.peak_load = torch.zeros(1, 4)
+    # omega = 2 Hz, so a time constant of 0.5 s: after 0.5 s, 1 - 1/e.
+    for _ in range(500):
+        task._update_load_stats(0.001)
+    torch.testing.assert_close(
+        task.stride_load, torch.full((1, 4), 1 - math.exp(-1)), atol=2e-3, rtol=0
+    )
+
+
+def test_peak_load_tracks_the_largest_substep_load_and_penalizes_its_excess():
+    active = torch.tensor([True, False, True, True])
+    task = make_task(active_legs=active)
+    task.stride_load = torch.zeros(1, 4)
+    task.peak_load = torch.zeros(1, 4)
+    # Three physics substeps of one control step; FL lands hard in the second.
+    for loads in ([0.5, 9.0, 0.8, 1.5], [2.5, 0.0, 0.3, 0.2], [1.2, 0.0, 0.1, 0.0]):
+        task.contact_forces[:, :, 2] = 98.1 * torch.tensor(loads)
+        task._update_load_stats(0.002)
+    torch.testing.assert_close(task.peak_load, torch.tensor([[2.5, 9.0, 0.8, 1.5]]))
+    # Threshold 1: (2.5 - 1)^2 + 0 + (1.5 - 1)^2; the locked leg is ignored.
+    torch.testing.assert_close(task._reward_peak_load(), torch.tensor([-2.5]))
+
+
+def test_heading_reward_is_one_on_course_and_falls_with_heading_error():
+    task = make_task(num_envs=3)
+    task.heading_target = torch.zeros(3)
+    yaw = torch.tensor([0.0, 0.25, math.pi])
+    task.base_quat = torch.stack(
+        (torch.zeros(3), torch.zeros(3), torch.sin(yaw / 2), torch.cos(yaw / 2)), dim=1
+    )
+    reward = task._reward_heading()
+    torch.testing.assert_close(
+        reward, torch.tensor([1.0, math.exp(-1.0), math.exp(-((math.pi / 0.25) ** 2))])
+    )

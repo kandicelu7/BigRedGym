@@ -51,7 +51,13 @@ def make_train_parser():
         "--experiment_name",
         type=str,
         default=None,
-        help="Override experiment_name (log dir is logs/<experiment_name>/...)",
+        help="Experiment folder under logs/ (default: task config value)",
+    )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Run label appended to the timestamp in the log folder and W&B name",
     )
     parser.add_argument(
         "--resume",
@@ -128,6 +134,8 @@ def setup(args=None, env_cfg=None, train_cfg=None):
 
     if args.experiment_name is not None:
         train_cfg.runner.experiment_name = args.experiment_name
+    if args.run_name is not None:
+        train_cfg.runner.run_name = args.run_name
     if args.resume:
         train_cfg.runner.resume = True
     if args.load_run is not None:
