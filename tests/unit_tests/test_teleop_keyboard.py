@@ -9,9 +9,12 @@ All of this is pure Python, so it is tested here with fakes: no GPU, no
 license, no window (runs in the default suite).
 """
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+from gym.envs.base.vsim_backend import VSimBackend
 from gym.utils.interfaces.teleop_bindings import (
     BINDINGS,
     KEY_TO_ACTION,
@@ -37,16 +40,17 @@ class FakeRender:
         return key in self.held
 
 
-class FakeBackend:
+class FakeBackend(VSimBackend):
     def __init__(self):
-        self._render_hooks = []
+        super().__init__()
         self._viewer_key_callback = None
-        self.window_closed = False
-        self.escape_key = "<ESC>"  # stands in for vlearn's UserKey.Escape
-        self.special_keys = {"UP": object(), "DOWN": object()}
-
-    def add_render_hook(self, fn):
-        self._render_hooks.append(fn)
+        # Match the vendor enum while exercising the real backend mapping.
+        # A separate fake special_keys table would hide unsupported enum names.
+        self._v = SimpleNamespace(
+            UserKey=SimpleNamespace(
+                Escape=object(), UpArrow=object(), DownArrow=object()
+            )
+        )
 
 
 class FakeEnv:
@@ -159,7 +163,7 @@ def test_escape_and_window_close_set_exit():
     assert env.exit is True
 
     env2, ui2, render2 = _make_vsim()
-    env2._backend.window_closed = True
+    env2._backend._window_closed = True
     ui2.poll(render2)
     assert env2.exit is True
 

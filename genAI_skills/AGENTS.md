@@ -163,8 +163,8 @@ match the local module while improving touched code deliberately.
 - Add comments for non-obvious engine semantics, tensor aliasing/liveness, or
   experiment rationale. Do not narrate obvious Python.
 - Never commit generated checkpoints, logs, W&B data, licenses, local wheels,
-  caches, or files larger than 100 KB. The size limit is enforced by hooks and
-  CI.
+  or caches. New or modified files must stay within 100 KiB, except for
+  `uv.lock`, which records the dependency graph. Hooks and CI enforce the limit.
 - Format only touched Python files in a dirty worktree, then run the full lint
   check:
 

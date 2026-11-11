@@ -1287,7 +1287,7 @@ requires-dist = [
     { name = "tensordict" },
     { name = "torch" },
     { name = "unitree-sdk2py", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'unitree-sdk') or (platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'unitree-sdk')", editable = "thirdparty/unitree_sdk2_python" },
-    { name = "vlearn", marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'vsim'", path = "thirdparty/vlearn/vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl" },
+    { name = "vlearn", marker = "python_full_version == '3.11.*' and platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'vsim'", path = "thirdparty/vlearn/vlearn-0.3.15+cu130-cp311-cp311-linux_x86_64.whl" },
     { name = "wandb" },
 ]
 provides-extras = ["gpu", "unitree-sdk", "vsim"]
@@ -1575,10 +1575,10 @@ wheels = [
 
 [[package]]
 name = "vlearn"
-version = "0.3.14+cu130"
-source = { path = "thirdparty/vlearn/vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl" }
+version = "0.3.15+cu130"
+source = { path = "thirdparty/vlearn/vlearn-0.3.15+cu130-cp311-cp311-linux_x86_64.whl" }
 wheels = [
-    { filename = "vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl", hash = "sha256:09a37fc404c004463c57e6fcd27bece97f440208a8a37eaec6e12b89635cea9f" },
+    { filename = "vlearn-0.3.15+cu130-cp311-cp311-linux_x86_64.whl", hash = "sha256:c04222224845b22a68f906b8b9a755618ec8eeaffad0e0ea3becf6b91fffd1a6" },
 ]
 
 [package.metadata]

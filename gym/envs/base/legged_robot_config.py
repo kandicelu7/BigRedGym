@@ -112,6 +112,7 @@ class LeggedRobotCfg(BaseConfig):
     class asset:
         file = ""
         vsim_visual_mesh_dir = None
+        mujoco_visual_model = None
         # * name of the feet bodies,
         # * used to index body state and contact force tensors
         foot_name = "foot"

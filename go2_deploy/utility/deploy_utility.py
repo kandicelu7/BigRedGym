@@ -31,7 +31,10 @@ def _get_obs_dof_pos_obs(main_controller, lowstate_msg):
     dof_pos_unitree_convention = torch.zeros(12)
     for i in range(12):
         dof_pos_unitree_convention[i] = motor_states[i].q
-    return dof_pos_unitree_convention[UNITREE_TO_QGYM_JOINT_IDX]
+    return (
+        dof_pos_unitree_convention[UNITREE_TO_QGYM_JOINT_IDX]
+        - main_controller.cfg.default_dof_pos
+    )
 
 
 def _get_obs_dof_vel(main_controller, lowstate_msg):
@@ -51,11 +54,8 @@ def _get_obs_dof_accel(main_controller, lowstate_msg):
 
 
 def _get_obs_dof_pos_target(main_controller, lowstate_msg):
-    # Clipped to actual joint range
-    dof_pos_target_unclipped = main_controller.last_action[0]
-    min_pos = main_controller.cfg.lower_joint_limit
-    max_pos = main_controller.cfg.upper_joint_limit
-    return torch.clip(dof_pos_target_unclipped, min=min_pos, max=max_pos)
+    # Previous applied policy offset in radians, after optional action smoothing.
+    return main_controller.last_action[0]
 
 
 def _get_obs_phase_obs(main_controller, lowstate_msg):
@@ -64,7 +64,7 @@ def _get_obs_phase_obs(main_controller, lowstate_msg):
 
 
 def _get_obs_phase_frequency(main_controller, lowstate_msg):
-    return torch.tensor([DeployConfig.phase_frequency])
+    return torch.tensor([main_controller.phase_frequency])
 
 
 # Returns torch tensor: observation vector from lowstate_msg
@@ -96,40 +96,20 @@ def lowstate_to_obs(main_controller, lowstate_msg):
 
 # Return torch.tensor(12): actual target position from Actor output
 def action_to_target_pos(main_controller, action):
-    if main_controller.cfg.task_name == "go2trot":
-        return (
-            action
-            + main_controller.cfg.default_dof_pos
-            + main_controller._gait_reference
-        )
-    else:
-        return action + main_controller.cfg.default_dof_pos
+    return action + main_controller.cfg.default_dof_pos
 
 
 # Return torch.tensor(12): the Actor output corresponding to
 # absolute position target_pos
 def target_pos_to_action(main_controller, target_pos):
-    if main_controller.cfg.task_name == "go2trot":
-        return (
-            target_pos
-            - main_controller.cfg.default_dof_pos
-            - main_controller._gait_reference
-        )
-    else:
-        return target_pos
+    return target_pos - main_controller.cfg.default_dof_pos
 
 
 # Returns LowCmd_ from the actor output action_qgm_convention, kp_mult
-# Accounts for gait_reference (when applicable) and default_pos
+# Adds the static default posture and maps targets to Unitree motor order.
 def action_to_lowcmd(main_controller, action_qgym_convention, kp_mult=1.0, kd_mult=1.0):
     target_pos_qgym = action_to_target_pos(main_controller, action_qgym_convention)
     target_pos = target_pos_qgym[QGYM_TO_UNITREE_JOINT_IDX]
-
-    target_pos = torch.clip(
-        target_pos,
-        min=main_controller.cfg.lower_joint_limit,
-        max=main_controller.cfg.upper_joint_limit,
-    )
 
     lowcmd = main_controller.default_lowcmd
     for i in range(12):

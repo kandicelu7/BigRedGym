@@ -116,6 +116,9 @@ class Go2Cfg(LeggedRobotCfg):
         file = "{GYM_ROOT_DIR}/resources/robots/" + "go2/urdf/go2.urdf"
         # Use the SDK's OBJ visuals; keep our URDF's complete physical model.
         vsim_visual_mesh_dir = "{GYM_ROOT_DIR}/thirdparty/vlearn/assets/go2/assets"
+        # CPU viewer defaults to collision shapes, with no external visual assets.
+        # Opt in with "{GYM_ROOT_DIR}/thirdparty/vlearn/assets/go2/go2.xml".
+        mujoco_visual_model = None
         foot_name = "foot"
         penalize_contacts_on = ["calf"]
         terminate_after_contacts_on = ["base"]

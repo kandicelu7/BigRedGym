@@ -41,7 +41,7 @@ dev = [
 [tool.uv.sources]
 # Vendored in-repo (gitignored — see thirdparty/README.md for the drop-in
 # procedure on a new machine).
-vlearn = { path = "thirdparty/vlearn/vlearn-0.3.14+cu130-cp311-cp311-linux_x86_64.whl" }
+vlearn = { path = "thirdparty/vlearn/vlearn-0.3.15+cu130-cp311-cp311-linux_x86_64.whl" }
 unitree-sdk2py = { path = "thirdparty/unitree_sdk2_python", editable = true }
 
 [tool.q2.unitree-sdk]
