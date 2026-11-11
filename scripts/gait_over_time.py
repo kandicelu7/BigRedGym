@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 
 import footfall
 import play
-from grid_eval import named_gaits
+from grid_eval import gait_reference
 from gym.utils.helpers import GYM_ROOT_DIR
 
 TRANSITION = "transition"
@@ -65,25 +65,8 @@ def get_args(argv=None):
 
 def gait_set(legs, leg_names):
     """Reference leg, compared legs, names and ideal RPDs [rad]."""
-    if len(legs) == 4:
-        # Zhang's convention: RF reference; RPD of (LF, RH, LH).
-        index = {name: k for k, name in zip(legs, leg_names)}
-        ref = index["FR"]
-        others = [index["FL"], index["RR"], index["RL"]]
-        pi = np.pi
-        gaits = [
-            ("trot", (pi, pi, 0.0)),
-            ("pace", (pi, 0.0, pi)),
-            ("bound", (0.0, pi, pi)),
-            ("pronk", (0.0, 0.0, 0.0)),
-        ]
-        return ref, others, gaits
-    ref, others = legs[0], legs[1:]
-    gaits = [
-        (name, tuple(2 * np.pi * np.asarray(rpd)))
-        for name, rpd in named_gaits(leg_names)
-    ]
-    return ref, others, gaits
+    ref, others, gaits = gait_reference(legs, leg_names)
+    return ref, others, [(n, tuple(2 * np.pi * np.asarray(r))) for n, r in gaits]
 
 
 def classify(rpd, gaits, transition_rad):

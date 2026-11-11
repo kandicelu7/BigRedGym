@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -81,7 +82,22 @@ def get_args(argv=None):
         type=float,
         default=0.18,
         help="max distance (fraction of a stride) to a named gait; farther is "
-        "'irregular'. Half the smallest spacing between the named gaits.",
+        "'irregular'.",
+    )
+    parser.add_argument(
+        "--max_spread",
+        type=float,
+        default=0.1,
+        help="max stride-to-stride circular std of any leg's touchdown "
+        "(fraction of a stride); more is 'irregular' whatever the mean timing. "
+        "Consistent gaits stay below ~0.05, erratic stepping is above ~0.11.",
+    )
+    parser.add_argument(
+        "--min_stance",
+        type=float,
+        default=0.04,
+        help="contacts shorter than this are taps, ignored when timing the "
+        "gait [s]. Taps last 0.01-0.02 s, stances 0.1 s or more.",
     )
     parser.add_argument(
         "--out",
@@ -97,6 +113,18 @@ def get_args(argv=None):
     return args
 
 
+# Rear-first hop: the rear legs land together this fraction of a stride
+# before the front legs. Common in the three-legged policies (lead 0.15-0.3
+# stride); plain hop is nearer below a lead of about half of it.
+HOP_STAGGER = 0.2
+
+
+def staggered_hop(names, rear_lead):
+    """Ideal timing (after names[0]) of a hop whose rear legs lead by rear_lead."""
+    land = [-rear_lead if name.startswith("R") else 0.0 for name in names]
+    return tuple((t - land[0]) % 1.0 for t in land[1:])
+
+
 def named_gaits(names):
     """Ideal gaits as touchdown times of legs a, b after the reference leg,
     in fractions of the reference leg's stride."""
@@ -108,6 +136,36 @@ def named_gaits(names):
         (f"{a}+{b} | {ref}", (0.5, 0.5)),
         (f"3-beat {ref}>{a}>{b}", (1 / 3, 2 / 3)),
         (f"3-beat {ref}>{b}>{a}", (2 / 3, 1 / 3)),
+        ("rear-first hop", staggered_hop(names, HOP_STAGGER)),
+    ]
+
+
+def robot_label(leg_lock):
+    if leg_lock.leg is None:
+        return "Intact"
+    side = {"FL": "Front-left", "FR": "Front-right", "RL": "Rear-left", "RR": "Rear-right"}
+    return f"{side[leg_lock.leg]} locked ({leg_lock.pose})"
+
+
+def gait_reference(legs, names):
+    """Reference leg, compared legs and named gaits for a robot's active legs.
+
+    Three legs: the first active leg is the reference (named_gaits). Four legs:
+    Zhang et al.'s convention, FR reference compared with (FL, RR, RL), i.e.
+    their (LF, RH, LH), and their four symmetric gaits.
+    """
+    if len(legs) == 3:
+        return legs[0], list(legs[1:]), named_gaits(names)
+    index = dict(zip(names, legs))
+    others = [index["FL"], index["RR"], index["RL"]]
+    return index["FR"], others, [
+        ("trot", (0.5, 0.5, 0.0)),
+        ("pace", (0.5, 0.0, 0.5)),
+        ("bound", (0.0, 0.5, 0.5)),
+        ("pronk", (0.0, 0.0, 0.0)),
+        # Trot whose second diagonal (FL, RR) lands early and split, RR
+        # first, while FR and RL stay together (seen in intact policies).
+        ("trot, split diagonal", (0.4, 0.25, 0.05)),
     ]
 
 
@@ -197,27 +255,48 @@ def circular_mean(fractions):
     return np.where(valid.any(axis=0), np.angle(mean) / (2 * np.pi) % 1.0, np.nan)
 
 
+def robot_gait(contact, ref, others, legs, gaits, dt, args):
+    """One robot's gait from its contact [step, foot], ignoring taps: mean
+    touchdown timing of `others` after `ref` (stride fractions), its largest
+    stride-to-stride spread, the most touchdowns of a leg per reference
+    stride, and the label. Erratic stepping (spread above max_spread) is
+    'irregular' even if its mean timing is near a named gait."""
+    min_air = int(round(0.03 / dt))
+    contact = footfall.drop_taps(contact, int(round(args.min_stance / dt)))
+    starts, fractions = footfall.relative_touchdowns(
+        contact, ref, others, min_air, int(round(2.0 / dt))
+    )
+    timing, spread = [], []
+    for leg in others:
+        f = fractions[leg][~np.isnan(fractions[leg])]
+        # Circular mean and std of the touchdown time, as stride fractions.
+        z = np.exp(2j * np.pi * f).mean() if len(f) else 0.0
+        timing.append(np.angle(z) / (2 * np.pi) % 1.0 if len(f) >= 3 else np.nan)
+        spread.append(np.sqrt(-2 * np.log(max(abs(z), 1e-9))) / (2 * np.pi))
+    rate = [len(footfall.touchdowns(contact[:, leg], min_air)) / max(len(starts), 1)
+            for leg in legs]
+    label = classify(timing, gaits, args.gait_tolerance)
+    if label != "not stepping" and max(spread) > args.max_spread:
+        label = "irregular"
+    return np.array(timing), max(spread), max(rate), label
+
+
 def cell_metrics(log, speed, legs, names, dt, args):
     """Per-robot gait, landing peak and load shares, summarized for the cell."""
-    ref, a, b = legs
-    gaits = named_gaits(names)
+    ref, others, gaits = gait_reference(legs, names)
     min_air = int(round(0.03 / dt))
     window = max(1, int(round(args.landing_window / dt)))
     ok = ~log["fell"]
     labels, timings, peaks = [], [], []
+    robot_spread = np.full(len(ok), np.nan)
+    robot_rate = np.full(len(ok), np.nan)
     for robot in np.flatnonzero(ok):
         contact = log["contact"][robot]
-        _, fractions = footfall.relative_touchdowns(
-            contact, ref, [a, b], min_air, int(round(2.0 / dt))
+        timing, robot_spread[robot], robot_rate[robot], label = robot_gait(
+            contact, ref, others, legs, gaits, dt, args
         )
-        timing = []
-        for leg in (a, b):
-            f = fractions[leg][~np.isnan(fractions[leg])]
-            # Circular mean of the touchdown time, as a fraction in [0, 1).
-            mean = np.angle(np.exp(2j * np.pi * f).mean()) / (2 * np.pi) if len(f) >= 3 else np.nan
-            timing.append(mean % 1.0)
         timings.append(timing)
-        labels.append(classify(timing, gaits, args.gait_tolerance))
+        labels.append(label)
         landings = [
             log["peak"][robot, td : td + window, leg].max()
             for leg in legs
@@ -225,6 +304,10 @@ def cell_metrics(log, speed, legs, names, dt, args):
         ]
         peaks.append(np.percentile(landings, 95) if landings else np.nan)
 
+    # Every robot's timing (NaN if it fell), so gaits can be reclassified later.
+    robot_timing = np.full((len(ok), len(others)), np.nan)
+    if timings:
+        robot_timing[ok] = np.array(timings)
     shares = log["impulse"][ok][:, legs]
     shares = shares / shares.sum(axis=1, keepdims=True)
     names_list = [name for name, _ in gaits] + ["irregular", "not stepping"]
@@ -233,9 +316,12 @@ def cell_metrics(log, speed, legs, names, dt, args):
         "speed_ratio": log["vx"][ok].mean() / speed if ok.any() else np.nan,
         "fall_rate": log["fell"].mean(),
         "gait_counts": counts,
-        "timing": circular_mean(np.array(timings)) if timings else np.full(2, np.nan),
+        "timing": circular_mean(np.array(timings)) if timings else np.full(len(others), np.nan),
+        "robot_timing": robot_timing,
+        "robot_spread": robot_spread,
+        "robot_touchdowns": robot_rate,
         "peak_force": np.nanmean(peaks) if peaks else np.nan,
-        "leg_shares": shares.mean(axis=0) if ok.any() else np.full(3, np.nan),
+        "leg_shares": shares.mean(axis=0) if ok.any() else np.full(len(legs), np.nan),
         "unevenness": (shares.std(axis=1) / shares.mean(axis=1)).mean() if ok.any() else np.nan,
     }, names_list
 
@@ -246,7 +332,8 @@ def gait_shares_over_time(log, legs, names, gait_names, dt, args):
     nearest named gait within `gait_tolerance`, else irregular."""
     from gait_over_time import classify, last_strides_rpd  # avoids an import cycle
 
-    gaits = [(n, tuple(2 * np.pi * np.asarray(r))) for n, r in named_gaits(names)]
+    ref, others, gaits = gait_reference(legs, names)
+    gaits = [(n, tuple(2 * np.pi * np.asarray(r))) for n, r in gaits]
     labels = gait_names + ["fell"]
     min_air = int(round(0.03 / dt))
     max_stride = int(round(2.0 / dt))
@@ -260,7 +347,7 @@ def gait_shares_over_time(log, legs, names, gait_names, dt, args):
                 label = "fell"
             else:
                 rpd = last_strides_rpd(
-                    contact[robot, :end], legs[0], legs[1:], min_air, max_stride, 2
+                    contact[robot, :end], ref, others, min_air, max_stride, 2
                 )
                 label = classify(rpd, gaits, 2 * np.pi * args.gait_tolerance)
                 label = "irregular" if label == "transition" else label
@@ -270,7 +357,8 @@ def gait_shares_over_time(log, legs, names, gait_names, dt, args):
 
 # Reference categorical palette (fixed order) for the named gaits; greys for
 # irregular, not stepping and fell, which are not gaits.
-GAIT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300"]
+GAIT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300",
+               "#7d5bd0", "#9c6b3a"]
 NON_GAIT_COLORS = {"irregular": "#c8c7c0", "not stepping": "#8a8980", "fell": "#3d3d3a"}
 
 
@@ -373,7 +461,7 @@ def plot(results, gait_names, leg_names, path, title):
                 if not np.isnan(value):
                     rgb = matplotlib.colors.to_rgb(colors[int(value)])
                     light = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] > 0.5
-                    ax.text(col, row, f"{gait_names[int(value)]}\n{share[row, col]:.0%}",
+                    ax.text(col, row, f"{textwrap.fill(gait_names[int(value)], 14)}\n{share[row, col]:.0%}",
                             ha="center", va="center", fontsize=7,
                             color="#1a1a19" if light else "white")
             handles = [plt.Rectangle((0, 0), 1, 1, color=colors[k]) for k in range(len(gait_names))]
@@ -477,8 +565,11 @@ if __name__ == "__main__":
     shape = (len(SWEEP_OMEGAS), len(SWEEP_SPEEDS))
     saved = {key: np.full(shape, np.nan) for key in keys}
     saved["gait_counts"] = np.zeros(shape + (len(gait_names),))
-    saved["timing"] = np.full(shape + (2,), np.nan)
-    saved["leg_shares"] = np.full(shape + (3,), np.nan)
+    saved["timing"] = np.full(shape + (len(leg_names) - 1,), np.nan)
+    saved["leg_shares"] = np.full(shape + (len(leg_names),), np.nan)
+    saved["robot_timing"] = np.full(shape + (args.robots, len(leg_names) - 1), np.nan)
+    saved["robot_spread"] = np.full(shape + (args.robots,), np.nan)
+    saved["robot_touchdowns"] = np.full(shape + (args.robots,), np.nan)
     times = next(iter(results.values()))["times"]
     saved["time_shares"] = np.full(shape + (len(times), len(time_labels)), np.nan)
     runs = np.full(shape, "", dtype=object)
@@ -499,8 +590,8 @@ if __name__ == "__main__":
     )
     checkpoint = "latest" if args.checkpoint == -1 else f"model_{args.checkpoint}"
     title = (
-        f"Front-right locked, "
-        + (f"one policy for all cells ({runs[0, 0]})" if args.task
+        f"{robot_label(env.cfg.leg_lock)}, "
+        + (f"{args.task}: one policy for all cells ({runs[0, 0]})" if args.task
            else f"one policy per cell ({checkpoint})")
         + f"; {args.robots} robots "
         f"per cell from random phases, measured {args.measure:g} s after "

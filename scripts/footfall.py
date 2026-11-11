@@ -139,6 +139,18 @@ def contact_intervals(time, in_contact, dt):
     return [(time[s] - dt, (e - s) * dt) for s, e in zip(starts, ends)]
 
 
+def drop_taps(contact, min_steps):
+    """Contact [step, foot] without contact blocks shorter than `min_steps`:
+    brief taps before a landing, which would otherwise count as touchdowns."""
+    contact = np.asarray(contact, dtype=bool).copy()
+    for foot in range(contact.shape[1]):
+        edges = np.diff(np.concatenate(([0], contact[:, foot].astype(int), [0])))
+        for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
+            if end - start < min_steps:
+                contact[start:end, foot] = False
+    return contact
+
+
 def touchdowns(in_contact, min_air_steps):
     """Steps where a foot lands after at least `min_air_steps` in the air."""
     on = in_contact.astype(bool)
