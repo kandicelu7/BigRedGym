@@ -307,6 +307,14 @@ STUDY_SETTINGS = {
     # Velocity tracking and heading together ("go where commanded") x1.5, x2.
     "track1.5": {"tracking_lin_vel": 6.0, "heading": 3.0},
     "track2": {"tracking_lin_vel": 8.0, "heading": 4.0},
+    # Even load and low peak load, off (0) in the baseline. Weights from the
+    # trained baseline-like policies: each term is then about half of, and
+    # about equal to, the gait reward (raw even_load ~ -0.1, peak_load
+    # ~ -0.045 per step).
+    "even2.5": {"even_load": 2.5},
+    "even5": {"even_load": 5.0},
+    "peak6": {"peak_load": 6.0},
+    "peak12": {"peak_load": 12.0},
 }
 STUDY_SEEDS = range(5)
 
