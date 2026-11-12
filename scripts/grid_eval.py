@@ -182,6 +182,12 @@ def classify(timing, gaits, tolerance):
     return best if best_distance <= tolerance else "irregular"
 
 
+def heading(env):
+    """Each robot's heading (yaw) [rad]; base_quat is [x, y, z, w]."""
+    x, y, z, w = env.base_quat.numpy().T
+    return np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+
 def rollout(env, runner, speed, args, omega=None):
     """Run every robot at `speed` (and oscillator frequency `omega`, for a
     policy trained with osc.omega_range); returns per-step contact, peaks and
@@ -211,6 +217,10 @@ def rollout(env, runner, speed, args, omega=None):
     n_settle = int(args.settle / env.dt)
     n_steps = int((args.settle + args.measure) / env.dt)
     fell_at = np.full(env.num_envs, n_steps)
+    # Turning and sideways drift over the measured window: the turn is summed
+    # step by step (so circling past 180 degrees still counts), the sideways
+    # offset is measured across the heading held at the window's start.
+    turn = np.zeros(env.num_envs)
     try:
         for i in range(n_steps):
             env.commands[:] = 0.0
@@ -230,13 +240,24 @@ def rollout(env, runner, speed, args, omega=None):
             fell_at[env.terminated.numpy() & (fell_at == n_steps)] = i
             load = env.contact_forces[:, env.feet_indices, 2] / weight
             contact_all.append((load > args.contact_threshold).numpy().copy())
+            if i == n_settle:
+                start_xy = env.root_states[:, :2].numpy().copy()
+                start_yaw = last_yaw = heading(env)
+            elif i > n_settle:
+                yaw = heading(env)
+                turn += (yaw - last_yaw + np.pi) % (2 * np.pi) - np.pi
+                last_yaw = yaw
             if i >= n_settle:
                 contact.append(contact_all[-1])
                 step_peak.append((peak / weight).numpy().copy())
                 vx.append(env.base_lin_vel[:, 0].numpy().copy())
     finally:
         env._post_physics_step = post_physics_step
+    moved = env.root_states[:, :2].numpy() - start_xy
+    sideways = -np.sin(start_yaw) * moved[:, 0] + np.cos(start_yaw) * moved[:, 1]
     return {
+        "turn_rate": np.degrees(np.abs(turn)) / args.measure,  # [robot], deg/s
+        "sideways": np.abs(sideways),  # [robot], m over the measured window
         "fell": fell.numpy(),
         "fell_at": fell_at,  # [robot], first step fallen (n_steps if never)
         "contact_all": np.stack(contact_all, axis=1),  # [robot, step, foot], whole run
@@ -323,6 +344,10 @@ def cell_metrics(log, speed, legs, names, dt, args):
         "peak_force": np.nanmean(peaks) if peaks else np.nan,
         "leg_shares": shares.mean(axis=0) if ok.any() else np.full(len(legs), np.nan),
         "unevenness": (shares.std(axis=1) / shares.mean(axis=1)).mean() if ok.any() else np.nan,
+        # Medians over robots that stayed up: how far off a straight line.
+        "turn_rate": np.median(log["turn_rate"][ok]) if ok.any() else np.nan,
+        "sideways": np.median(log["sideways"][ok]) if ok.any() else np.nan,
+        "robot_turn_rate": np.where(ok, log["turn_rate"], np.nan),
     }, names_list
 
 
@@ -440,7 +465,7 @@ def plot(results, gait_names, leg_names, path, title):
             out[i, j] = reduce(cell[key])
         return out
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+    fig, axes = plt.subplots(2, 4, figsize=(21, 9))
     panels = [
         # Ranges fitted to the data (see below) so small differences show.
         ("speed_ratio", "measured / commanded speed", "RdBu", None, "{:.2f}"),
@@ -449,7 +474,11 @@ def plot(results, gait_names, leg_names, path, title):
         ("peak_force", "peak landing force [x body weight]", "plasma", None, "{:.2f}"),
         ("unevenness", "uneven load across legs [CV, 0 = even]", "cividis", None, "{:.2f}"),
         ("leg_shares", "load share per leg", "Greys", (1 / 3, 1.0), None),
+        ("turn_rate", "turn rate [deg/s] (median; 0 = straight)", "magma_r", None, "{:.1f}"),
+        ("sideways", "sideways drift [m] over the measured window", "magma_r", None, "{:.1f}"),
     ]
+    # Panel order: speed, falls, gait, turn rate / peak, evenness, shares, sideways.
+    panels = [panels[k] for k in (0, 1, 2, 6, 3, 4, 5, 7)]
     for ax, (key, label, cmap, limits, fmt) in zip(axes.ravel(), panels):
         if key is None:  # categorical gait map
             dominant = grid("gait_counts", lambda c: np.argmax(c) if c.sum() else np.nan)
@@ -479,7 +508,9 @@ def plot(results, gait_names, leg_names, path, title):
         else:
             values = grid(key)
             vmin, vmax = limits or (np.nanmin(values), np.nanmax(values))
-            contrast = key in ("speed_ratio", "fall_rate")
+            contrast = key in ("speed_ratio", "fall_rate", "turn_rate", "sideways")
+            if key in ("turn_rate", "sideways"):
+                vmin = 0.0
             if key == "speed_ratio":
                 # Diverging around perfect tracking (1.0), symmetric so equal
                 # over- and undershoot get equal color strength.
@@ -561,7 +592,7 @@ if __name__ == "__main__":
 
     path = Path(args.out)
     path.parent.mkdir(parents=True, exist_ok=True)
-    keys = ["speed_ratio", "fall_rate", "peak_force", "unevenness"]
+    keys = ["speed_ratio", "fall_rate", "peak_force", "unevenness", "turn_rate", "sideways"]
     shape = (len(SWEEP_OMEGAS), len(SWEEP_SPEEDS))
     saved = {key: np.full(shape, np.nan) for key in keys}
     saved["gait_counts"] = np.zeros(shape + (len(gait_names),))
@@ -570,6 +601,7 @@ if __name__ == "__main__":
     saved["robot_timing"] = np.full(shape + (args.robots, len(leg_names) - 1), np.nan)
     saved["robot_spread"] = np.full(shape + (args.robots,), np.nan)
     saved["robot_touchdowns"] = np.full(shape + (args.robots,), np.nan)
+    saved["robot_turn_rate"] = np.full(shape + (args.robots,), np.nan)
     times = next(iter(results.values()))["times"]
     saved["time_shares"] = np.full(shape + (len(times), len(time_labels)), np.nan)
     runs = np.full(shape, "", dtype=object)
