@@ -39,7 +39,9 @@ class Go2Osc(Go2):
         self._load_history = torch.zeros(
             self.num_envs, self.cfg.osc.grf_delay_max_steps + 1, 4, device=self.device
         )
-        self._load_delay = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._load_delay = torch.zeros(
+            self.num_envs, dtype=torch.long, device=self.device
+        )
         self.osc_coupling = torch.zeros_like(self.osc_omega)
         self.osc_offset = torch.zeros_like(self.osc_omega)
 
@@ -54,6 +56,9 @@ class Go2Osc(Go2):
         # Heading the robot should keep [rad]: its heading at reset, turned
         # by any yaw-rate command.
         self.heading_target = torch.zeros(self.num_envs, device=self.device)
+        # Forward speed averaged over about one stride (exponential moving
+        # average with time constant 1 / omega), for the steady-speed reward.
+        self.stride_vx = torch.zeros(self.num_envs, device=self.device)
 
     def _init_leg_lock(self):
         lock = self.cfg.leg_lock
@@ -64,8 +69,10 @@ class Go2Osc(Go2):
             raise ValueError(f"unknown leg_lock.leg {lock.leg!r}")
         # The locked leg's oscillator is meaningless; mask it out.
         self.active_legs = torch.tensor(
-            [lock.leg is None or not name.startswith(lock.leg + "_")
-             for name in foot_names],
+            [
+                lock.leg is None or not name.startswith(lock.leg + "_")
+                for name in foot_names
+            ],
             dtype=torch.bool,
             device=self.device,
         )
@@ -135,6 +142,8 @@ class Go2Osc(Go2):
         self.heading_target = wrap_to_pi(
             self.heading_target + self.commands[:, 2] * self.dt
         )
+        alpha = torch.clamp(self.dt * self.osc_omega[:, 0], max=1.0)
+        self.stride_vx += alpha * (self.base_lin_vel[:, 0] - self.stride_vx)
 
     def _update_load_stats(self, sim_dt):
         """Per-foot load averaged over about one oscillator period (an
@@ -171,7 +180,9 @@ class Go2Osc(Go2):
             return self.grf
         self._load_history = torch.roll(self._load_history, 1, dims=1)
         self._load_history[:, 0] = self.grf
-        load = self._load_history[torch.arange(self.num_envs, device=self.device), self._load_delay]
+        load = self._load_history[
+            torch.arange(self.num_envs, device=self.device), self._load_delay
+        ]
         if osc.grf_noise_std > 0.0:
             load = load + torch.randn_like(load) * osc.grf_noise_std
         return torch.clamp(load, 0.0, 1.0)
@@ -189,7 +200,9 @@ class Go2Osc(Go2):
         masked_update(self.phase, phase, reset_mask)
         self.phase_vel.masked_fill_(reset_mask.unsqueeze(1), 0.0)
         if self.cfg.osc.grf_delay_max_steps > 0:
-            delay = torch.randint_like(self._load_delay, self.cfg.osc.grf_delay_max_steps + 1)
+            delay = torch.randint_like(
+                self._load_delay, self.cfg.osc.grf_delay_max_steps + 1
+            )
             self._load_delay[:] = torch.where(reset_mask, delay, self._load_delay)
             self._load_history[reset_mask] = 0.0
         omega_range = self.cfg.osc.omega_range
@@ -205,6 +218,7 @@ class Go2Osc(Go2):
         self.heading_target = torch.where(
             reset_mask, yaw_of(self.root_states[:, 3:7]), self.heading_target
         )
+        self.stride_vx.masked_fill_(reset_mask, 0.0)
         self._update_phase_obs()
 
     def reset_to_basic(self, reset_mask):
@@ -229,9 +243,7 @@ class Go2Osc(Go2):
 
     def _reward_gait(self):
         """Penalize load in swing [0, pi), reward load in stance [pi, 2 pi)."""
-        return -torch.sum(
-            self.grf * torch.sin(self.phase) * self.active_legs, dim=1
-        )
+        return -torch.sum(self.grf * torch.sin(self.phase) * self.active_legs, dim=1)
 
     def _reward_even_load(self):
         """Penalize uneven load over the active legs, averaged over about a
@@ -251,6 +263,33 @@ class Go2Osc(Go2):
         [x body weight]."""
         excess = self.peak_load - self.cfg.reward_settings.peak_load_threshold
         return -torch.sum(excess.clamp(min=0.0).square() * self.active_legs, dim=1)
+
+    def _reward_orientation(self):
+        """Keep the body level, pitch and roll with their own widths
+        (reward_settings.pitch_sigma, roll_sigma); equal to the base class's
+        reward when both are its tracking_sigma."""
+        s = self.cfg.reward_settings
+        g = self.projected_gravity
+        return torch.exp(-g[:, 0].square() / s.pitch_sigma) + torch.exp(
+            -g[:, 1].square() / s.roll_sigma
+        )
+
+    def _reward_steady_speed(self):
+        """Penalize forward-speed changes within a stride (the start-stop of
+        a pronk or hop): squared deviation of the forward speed from its
+        one-stride running average, in units of reward_settings.steady_sigma
+        x the commanded speed (at least 0.5 m/s), capped at steady_cap. Off
+        for steady_delay seconds after each reset and new command, so
+        speeding up or slowing down to a new command is not penalized; the
+        cap bounds the rest of that, and the large relative error of slow
+        commands."""
+        s = self.cfg.reward_settings
+        scale = s.steady_sigma * self.commands[:, 0].abs().clamp(min=0.5)
+        error = ((self.base_lin_vel[:, 0] - self.stride_vx) / scale).square()
+        error = error.clamp(max=s.steady_cap)
+        period = max(1, int(round(self.cfg.commands.resampling_time / self.dt)))
+        since_command = (self.episode_length_buf % period) * self.dt
+        return -error * (since_command >= s.steady_delay)
 
     def _reward_heading(self):
         """Keep the heading the robot had at reset (turned by any yaw-rate

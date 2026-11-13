@@ -20,7 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from gym.envs.go2.go2osc_config import STUDY_SETTINGS, study_task_name
+from gym.envs.go2.go2osc_config import STUDY_SETTINGS, WIDE_SETTINGS, study_task_name
 from gym.utils.helpers import GYM_ROOT_DIR
 from study_summary import DATA, FIGURES
 
@@ -52,7 +52,7 @@ def get_args(argv=None):
 def study_runs(wide=False):
     """(task, run directory name) of every study run with checkpoints."""
     found = []
-    for setting in STUDY_SETTINGS:
+    for setting in WIDE_SETTINGS if wide else STUDY_SETTINGS:
         task = study_task_name(setting, wide)
         for run in sorted((Path(GYM_ROOT_DIR) / "logs" / task).glob("*")):
             if any(run.glob("model_*.pt")):

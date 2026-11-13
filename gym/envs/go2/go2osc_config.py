@@ -81,6 +81,20 @@ class Go2OscCfg(Go2Cfg):
         peak_load_threshold = 1.0
         # Heading error [rad] at which the heading reward falls to 1/e.
         heading_sigma = 0.25
+        # Orientation reward: exp(-g_x^2 / pitch_sigma) + exp(-g_y^2 /
+        # roll_sigma), g the gravity direction in the body frame. 0.25 for
+        # both is the base class's reward (which uses tracking_sigma); a
+        # larger roll_sigma tolerates more sideways sway.
+        pitch_sigma = 0.25
+        roll_sigma = 0.25
+        # Steady-speed reward: forward-speed deviation from its one-stride
+        # running average, in units of steady_sigma x the commanded speed
+        # (at least 0.5 m/s), squared and capped at steady_cap. Off for
+        # steady_delay [s] after each reset and new command; the cap bounds
+        # what is left of speeding up to a new command, and slow commands.
+        steady_sigma = 0.1
+        steady_delay = 1.0
+        steady_cap = 4.0
 
     class scaling(Go2Cfg.scaling):
         phase_vel = 2 * 3.14159 * 4.0
@@ -128,6 +142,7 @@ class Go2OscRunnerCfg(Go2RunnerCfg):
                 even_load = 0.0
                 peak_load = 0.0
                 heading = 0.0
+                steady_speed = 0.0
 
             class termination_weight:
                 termination = 0.15
@@ -317,6 +332,22 @@ STUDY_SETTINGS = {
     "peak12": {"peak_load": 12.0},
 }
 STUDY_SEEDS = range(5)
+# The wide-range study adds settings that change the orientation reward and
+# reward a steady speed. A "reward_settings" entry overrides
+# Go2OscCfg.reward_settings instead of a weight.
+WIDE_SETTINGS = {
+    **STUDY_SETTINGS,
+    # Orientation: roll tolerated 4x more (sway), or the whole orientation
+    # reward halved (both sway and pitch).
+    "roll4": {"reward_settings": {"roll_sigma": 1.0}},
+    "orient0.5": {"orientation": 0.5},
+    # Steady speed, off (0) in the baseline. Raw value for the trained wide
+    # baseline under training commands ~ -0.34 per step (forward speed varies
+    # by ~3-5% of the command within a stride above 1 m/s, more when slow),
+    # so these are about half of, and about equal to, the gait reward (~0.36).
+    "steady0.5": {"steady_speed": 0.5},
+    "steady1": {"steady_speed": 1.0},
+}
 
 
 # Wide-range study: the same settings over speeds to 4.5 m/s and oscillator
@@ -352,7 +383,9 @@ def eval_grid(task):
 
 def study_cfgs(setting, wide=False):
     """Env and runner config classes for one reward-study setting."""
-    weights = {**STUDY_BASE_WEIGHTS, **STUDY_SETTINGS[setting]}
+    changed = dict((WIDE_SETTINGS if wide else STUDY_SETTINGS)[setting])
+    reward_settings = changed.pop("reward_settings", {})
+    weights = {**STUDY_BASE_WEIGHTS, **changed}
 
     class RunnerCfg(Go2OscFrontLockedOmegaRunnerCfg):
         class critic(Go2OscFrontLockedOmegaRunnerCfg.critic):
@@ -366,11 +399,20 @@ def study_cfgs(setting, wide=False):
     for name, value in weights.items():
         setattr(RunnerCfg.critic.reward.weights, name, value)
     env_cfg = Go2OscFrontLockedWideCfg if wide else Go2OscFrontLockedOmegaCfg
+    if reward_settings:
+        base = env_cfg
+
+        class EnvCfg(base):
+            class reward_settings(base.reward_settings):
+                pass
+
+        for name, value in reward_settings.items():
+            setattr(EnvCfg.reward_settings, name, value)
+        env_cfg = EnvCfg
     return env_cfg, RunnerCfg
 
 
 STUDY_TASKS = {
-    study_task_name(s, wide): study_cfgs(s, wide)
-    for wide in (False, True)
-    for s in STUDY_SETTINGS
+    **{study_task_name(s): study_cfgs(s) for s in STUDY_SETTINGS},
+    **{study_task_name(s, True): study_cfgs(s, True) for s in WIDE_SETTINGS},
 }
