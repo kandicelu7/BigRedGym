@@ -11,11 +11,13 @@ Supports MuJoCo CPU/Warp and optional VSim checkpoints.
 
 import argparse
 import random
+from datetime import datetime
+from pathlib import Path
 
 import torch
 import numpy as np
 
-from gym.utils.helpers import set_seed
+from gym.utils.helpers import get_load_path, set_seed
 from gym.utils.task_registry import task_registry
 
 
@@ -73,6 +75,36 @@ def get_play_args(argv=None):
         "gym/utils/interfaces/MujocoKeyboardInterface.py for key bindings). "
         "Use --no-keyboard to disable.",
     )
+    parser.add_argument(
+        "--follow",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="keep the MuJoCo viewer camera following env 0's robot. "
+        "Use --no-follow for a fixed camera.",
+    )
+    parser.add_argument(
+        "--record",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="save the last --record_seconds of env 0's playback as an "
+        "animated GIF when playback ends or is interrupted (MuJoCo CPU "
+        "backend only). "
+        "Use --no-record to disable.",
+    )
+    parser.add_argument(
+        "--record_seconds",
+        type=float,
+        default=10.0,
+        help="length of the saved recording [s]; rendering it at exit takes "
+        "about 3.5x this long",
+    )
+    parser.add_argument(
+        "--record_path",
+        type=str,
+        default=None,
+        help="output file, .gif or .webp (default: "
+        "logs/<experiment_name>/videos/<run>_<model>_<time>.gif)",
+    )
     return parser.parse_args(argv)
 
 
@@ -97,6 +129,10 @@ def setup(args):
     env_cfg.init_state.reset_mode = "reset_to_basic"
     if hasattr(env_cfg, "viewer"):
         env_cfg.viewer.show_ui = args.viewer_ui
+    if args.record and args.headless:
+        # A headless MuJoCo model with link-mass randomization drops its
+        # visual meshes, which recordings need; play back at nominal masses.
+        env_cfg.domain_randomization.startup.link_mass_scale_range = None
 
     if args.seed is not None:
         env_cfg.seed = args.seed
@@ -128,10 +164,23 @@ def setup(args):
 
     runner = task_registry.make_alg_runner(env, train_cfg)
     runner.switch_to_eval()
-    return env, runner
+    load_path = get_load_path(
+        name=train_cfg.runner.experiment_name,
+        load_run=train_cfg.runner.load_run,
+        checkpoint=train_cfg.runner.checkpoint,
+    )
+    return env, runner, load_path
 
 
-def play(env, runner):
+def default_video_path(load_path):
+    """logs/<experiment_name>/videos/<run>_<model>_<time>.gif"""
+    load_path = Path(load_path)
+    run, model = load_path.parent.name, load_path.stem
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return load_path.parent.parent / "videos" / f"{run}_{model}_{stamp}.gif"
+
+
+def play(env, runner, recorder=None):
     n_steps = 10 * int(env.max_episode_length)
     log = []
     try:
@@ -142,25 +191,38 @@ def play(env, runner):
                 runner.actor_cfg["disable_actions"],
             )
             env.step()
+            if recorder is not None:
+                recorder.capture()
 
-            log.append(
-                (
-                    i * env.dt,
-                    env.commands[0, 3].item(),
-                    env.base_height[0].item(),
-                    env.episode_length_buf[0].item(),
+            # Height-tracking log; only tasks with a height command (4th entry).
+            if env.commands.shape[1] > 3:
+                log.append(
+                    (
+                        i * env.dt,
+                        env.commands[0, 3].item(),
+                        env.base_height[0].item(),
+                        env.episode_length_buf[0].item(),
+                    )
                 )
-            )
 
             env.check_exit()
+            # Closing the MuJoCo viewer window ends playback (otherwise the
+            # loop keeps simulating without a window until n_steps).
+            viewer = getattr(env._backend, "_viewer", None)
+            if viewer is not None and not viewer.is_running():
+                break
     finally:
-        np.save("height_log.npy", np.array(log))
+        if log:
+            np.save("height_log.npy", np.array(log))
+        # Runs on normal end, window close, sys.exit and Ctrl+C alike.
+        if recorder is not None:
+            recorder.save()
 
 
 if __name__ == "__main__":
     args = get_play_args()
     with torch.no_grad():
-        env, runner = setup(args)
+        env, runner, load_path = setup(args)
         # The MuJoCo warp (GPU) backend is headless-only: render() is a no-op and
         # it has no passive viewer, so nothing draws.  Point the user at cpu.
         if (
@@ -199,4 +261,20 @@ if __name__ == "__main__":
                 from gym.utils.interfaces.CommandVisualizer import CommandVisualizer
 
                 CommandVisualizer(env)
-        play(env, runner)
+        if args.follow and args.backend == "mujoco" and not args.headless:
+            # Installed last: it chains onto the overlay hook set above.
+            from gym.utils.interfaces.CameraTracker import CameraTracker
+
+            CameraTracker(env)
+        recorder = None
+        if args.record and hasattr(env._backend, "_datas"):
+            from gym.utils.interfaces.VideoRecorder import VideoRecorder
+
+            recorder = VideoRecorder(
+                env,
+                args.record_path or default_video_path(load_path),
+                seconds=args.record_seconds,
+            )
+        elif args.record:
+            print("Recording needs the MuJoCo CPU backend (--device cpu); skipped.")
+        play(env, runner, recorder)

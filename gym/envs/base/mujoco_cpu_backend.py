@@ -7,11 +7,13 @@ after each step.
 """
 
 import copy
+import time
 
 import mujoco
 import numpy as np
 import torch
 
+from gym import GYM_ROOT_DIR
 from gym.envs.base.domain_randomization import (
     contact_friction_range,
     link_mass_scale_range,
@@ -44,6 +46,8 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._show_ui = False  # overridden from cfg.viewer.show_ui in setup()
         self._viewer_key_callback = None
         self._viewer_overlay_fn = None  # called each render() before sync()
+        self._render_deadline = None
+        self._render_pending_time = 0.0
         self._randomize_contact_friction = False
         self._randomize_link_mass = False
         self._models: list[mujoco.MjModel] | None = None
@@ -149,9 +153,17 @@ class MuJocoCPUBackend(MuJocoBackendBase):
         self._randomize_contact_friction = contact_friction_range(cfg) is not None
         self._randomize_link_mass = link_mass_scale_range(cfg) is not None
         headless = task.headless if task is not None else True
+        visual_model = getattr(cfg.asset, "mujoco_visual_model", None)
+        visual_model_path = (
+            visual_model.format(GYM_ROOT_DIR=GYM_ROOT_DIR)
+            if visual_model is not None and not headless
+            else None
+        )
 
         mjm = self._load_model(
-            cfg, discard_visual=self._randomize_link_mass and headless
+            cfg,
+            discard_visual=self._randomize_link_mass and headless,
+            visual_model_path=visual_model_path,
         )
         self._configure_model(mjm, cfg, device)
         self._run_task_callbacks(mjm, task)
@@ -202,6 +214,9 @@ class MuJocoCPUBackend(MuJocoBackendBase):
             d.qfrc_applied[off:] = torques_np[i]
             mujoco.mj_step(self._model_for_env(i), d)
         self._sync_state_from_mujoco()
+        # Count simulated duration once per batch, independent of world count.
+        # A separate clock survives episode resets of individual MjData objects.
+        self._render_pending_time += self._mjm.opt.timestep
 
     def _sync_state_from_mujoco(self) -> None:
         for i, d in enumerate(self._datas):
@@ -345,6 +360,22 @@ class MuJocoCPUBackend(MuJocoBackendBase):
                 show_right_ui=self._show_ui,
             )
         if self._viewer.is_running():
+            now = time.monotonic()
+            if sync_frame_time and self._render_deadline is not None:
+                # Include every physics substep since the previous render.
+                # Rebase after slow frames rather than racing to catch up.
+                self._render_deadline = max(
+                    self._render_deadline + self._render_pending_time, now
+                )
+                remaining = self._render_deadline - now
+                if remaining > 0:
+                    time.sleep(remaining)
+            else:
+                self._render_deadline = now if sync_frame_time else None
+            self._render_pending_time = 0.0
             if self._viewer_overlay_fn is not None:
                 self._viewer_overlay_fn(self._viewer)
             self._viewer.sync()
+        else:
+            self._render_deadline = None
+            self._render_pending_time = 0.0

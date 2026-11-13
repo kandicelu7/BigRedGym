@@ -74,12 +74,17 @@ Optional arguments:
 --save_interval: override checkpoint interval in learning iterations
 --seed: random seed for rng
 --batch_size: override batch size from cfg
---experiment_name: Override experiment_name (log dir is logs/<experiment_name>/...)
+--experiment_name: Experiment folder under logs/ (default: task config value)
+--run_name: Run label appended to the timestamp in the log folder and W&B name
 --resume: Resume optimizer and model state from an existing run
 --load_run: Run directory under logs/<experiment_name>/ (default: latest).
 --checkpoint: Checkpoint iteration to resume (default: latest).
 --original_cfg: Load environment and runner configs saved with the selected run.
 ```
+
+For example, `--task go2trot --run_name tracking_trial` saves to
+`logs/go2trot/<timestamp>_tracking_trial/` and uses `<timestamp>_tracking_trial`
+as the W&B display name. Use `--experiment_name` to change the parent folder.
 
 # Testing
 
@@ -103,6 +108,10 @@ Optional arguments:
 --checkpoint: Checkpoint iteration to resume (default: latest).
 --original_cfg: Load environment and runner configs saved with the selected run.
 ```
+
+Go2Trot policies observe sine/cosine gait phase and phase frequency. To resume or
+play an older checkpoint trained without these inputs, add `--original_cfg` to
+use the configuration saved with that run.
 
 The automated regression suite runs with `uv run --frozen python -m pytest -q`.
 See [limitations and validation scope](genAI_skills/README_MUJOCO.md#limitations-and-validation-scope)

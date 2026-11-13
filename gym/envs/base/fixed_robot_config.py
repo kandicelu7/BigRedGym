@@ -49,6 +49,7 @@ class FixedRobotCfg(BaseConfig):
     class asset:
         file = ""
         vsim_visual_mesh_dir = None
+        mujoco_visual_model = None
         penalize_contacts_on = []
         terminate_after_contacts_on = []
         disable_gravity = False
