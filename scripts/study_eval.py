@@ -1,14 +1,16 @@
 """Evaluate every trained reward-study run with grid_eval.py.
 
 Finds runs under logs/go2osc_study_<setting>/<run>/ and evaluates each over the
-(speed, frequency) grid, several at a time, writing
-logs/study_results/<task>__<run>[__it<N>].png / .npz / .log. Runs already
-evaluated are skipped, so it can be re-run as more runs arrive.
+(speed, frequency) grid, several at a time. Results (.npz) and each
+evaluation's log go to logs/study_results/runs/ (logs in runs/logs/), the
+per-run heatmaps (.png) to results/study/runs/. Runs already evaluated are
+skipped, so it can be re-run as more runs arrive.
 
 Usage:
     uv run --frozen scripts/study_eval.py                    # latest checkpoints
     uv run --frozen scripts/study_eval.py --checkpoint 1250  # convergence check
     uv run --frozen scripts/study_eval.py --robots 32        # faster, noisier
+    uv run --frozen scripts/study_eval.py --force            # redo, overwriting
 Then summarize with scripts/study_summary.py.
 """
 
@@ -20,8 +22,11 @@ from pathlib import Path
 
 from gym.envs.go2.go2osc_config import STUDY_SETTINGS, study_task_name
 from gym.utils.helpers import GYM_ROOT_DIR
+from study_summary import DATA, FIGURES
 
-RESULTS = Path(GYM_ROOT_DIR) / "logs" / "study_results"
+RESULTS = DATA / "runs"  # .npz per run
+LOGS = RESULTS / "logs"  # one log per evaluation
+PLOTS = FIGURES / "runs"  # heatmaps per run
 
 
 def get_args(argv=None):
@@ -31,14 +36,24 @@ def get_args(argv=None):
     parser.add_argument("--jobs", type=int, default=4, help="evaluations at once")
     parser.add_argument("--threads", type=int, default=4, help="CPU threads per job")
     parser.add_argument("--dry_run", action="store_true", help="list, don't run")
+    parser.add_argument(
+        "--wide",
+        action="store_true",
+        help="the wide-range study (go2osc_wide_*: to 4.5 m/s and 6 Hz)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="re-evaluate runs that already have results, overwriting them",
+    )
     return parser.parse_args(argv)
 
 
-def study_runs():
+def study_runs(wide=False):
     """(task, run directory name) of every study run with checkpoints."""
     found = []
     for setting in STUDY_SETTINGS:
-        task = study_task_name(setting)
+        task = study_task_name(setting, wide)
         for run in sorted((Path(GYM_ROOT_DIR) / "logs" / task).glob("*")):
             if any(run.glob("model_*.pt")):
                 found.append((task, run.name))
@@ -46,17 +61,19 @@ def study_runs():
 
 
 def out_path(task, run, checkpoint):
+    """Results file of one evaluation (its heatmap: same name in PLOTS)."""
     suffix = "" if checkpoint == -1 else f"__it{checkpoint}"
-    return RESULTS / f"{task}__{run}{suffix}.png"
+    return RESULTS / f"{task}__{run}{suffix}.npz"
 
 
 def main():
     args = get_args()
-    RESULTS.mkdir(parents=True, exist_ok=True)
+    LOGS.mkdir(parents=True, exist_ok=True)
+    PLOTS.mkdir(parents=True, exist_ok=True)
     todo = []
-    for task, run in study_runs():
+    for task, run in study_runs(args.wide):
         out = out_path(task, run, args.checkpoint)
-        if out.with_suffix(".npz").exists():
+        if out.exists() and not args.force:
             print(f"done    {out.name}")
         else:
             todo.append((task, run, out))
@@ -88,9 +105,11 @@ def main():
             "--robots",
             str(args.robots),
             "--out",
+            str(PLOTS / f"{out.stem}.png"),
+            "--data_out",
             str(out),
         ]
-        log = open(out.with_suffix(".log"), "w")
+        log = open(LOGS / f"{out.stem}.log", "w")
         proc = subprocess.Popen(
             cmd, cwd=script.parent, env=env, stdout=log, stderr=subprocess.STDOUT
         )
@@ -100,7 +119,7 @@ def main():
     for entry in running:
         finish(entry)
     if failed:
-        raise SystemExit(f"failed (see .log next to each): {failed}")
+        raise SystemExit(f"failed (see the .log of each in {LOGS}): {failed}")
 
 
 if __name__ == "__main__":

@@ -319,12 +319,38 @@ STUDY_SETTINGS = {
 STUDY_SEEDS = range(5)
 
 
-def study_task_name(setting):
+# Wide-range study: the same settings over speeds to 4.5 m/s and oscillator
+# frequencies to 6 Hz. 4.5 m/s is about the canine amputees' top speed (6.7
+# m/s at 0.61 m withers height) at the same Froude number for the Go2's
+# ~0.3 m base height; 6 Hz keeps the stride length at the top speed near
+# that of the original grid (2.5 m/s at 3.75 Hz, ~0.7 m). The grid contains
+# every cell of the original one, so the overlap can be compared directly.
+WIDE_SPEEDS = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5]  # [m/s]
+WIDE_OMEGAS = [1.5, 2.25, 3.0, 3.75, 4.5, 5.25, 6.0]  # [Hz]
+
+
+class Go2OscFrontLockedWideCfg(Go2OscFrontLockedOmegaCfg):
+    class osc(Go2OscFrontLockedOmegaCfg.osc):
+        omega_range = [1.25, 6.25]  # [Hz], margin around WIDE_OMEGAS
+
+    class commands(Go2OscFrontLockedOmegaCfg.commands):
+        class ranges(Go2OscFrontLockedOmegaCfg.commands.ranges):
+            lin_vel_x = [0.25, 4.75]  # [m/s], margin around WIDE_SPEEDS
+
+
+def study_task_name(setting, wide=False):
     """Task (and experiment) name of a reward-study setting."""
-    return f"go2osc_study_{setting}"
+    return f"go2osc_{'wide' if wide else 'study'}_{setting}"
 
 
-def study_cfgs(setting):
+def eval_grid(task):
+    """(speeds, frequencies) at which grid_eval.py evaluates a task."""
+    if task.startswith("go2osc_wide_"):
+        return WIDE_SPEEDS, WIDE_OMEGAS
+    return SWEEP_SPEEDS, SWEEP_OMEGAS
+
+
+def study_cfgs(setting, wide=False):
     """Env and runner config classes for one reward-study setting."""
     weights = {**STUDY_BASE_WEIGHTS, **STUDY_SETTINGS[setting]}
 
@@ -335,11 +361,16 @@ def study_cfgs(setting):
                     pass
 
         class runner(Go2OscFrontLockedOmegaRunnerCfg.runner):
-            experiment_name = study_task_name(setting)
+            experiment_name = study_task_name(setting, wide)
 
     for name, value in weights.items():
         setattr(RunnerCfg.critic.reward.weights, name, value)
-    return Go2OscFrontLockedOmegaCfg, RunnerCfg
+    env_cfg = Go2OscFrontLockedWideCfg if wide else Go2OscFrontLockedOmegaCfg
+    return env_cfg, RunnerCfg
 
 
-STUDY_TASKS = {study_task_name(s): study_cfgs(s) for s in STUDY_SETTINGS}
+STUDY_TASKS = {
+    study_task_name(s, wide): study_cfgs(s, wide)
+    for wide in (False, True)
+    for s in STUDY_SETTINGS
+}

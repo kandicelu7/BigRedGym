@@ -7,7 +7,9 @@ osc.omega_range) at every cell instead, forcing the cell's frequency. Measures:
 
     speed tracking (measured / commanded), fall rate,
     resulting gait (footfall timing matched to named three-legged gaits),
-    peak landing force (x body weight), and how evenly the legs carry load.
+    peak landing force (x body weight), and how evenly the legs carry load,
+    turning and sideways drift, speed fluctuation within a stride, vertical
+    bounce, roll and pitch sway and the mean roll (lean).
 
 Results are plotted as heatmaps with speed on the x axis and frequency on the
 y axis, and saved as .npz next to the figure.
@@ -36,6 +38,7 @@ import play
 from gym.envs.go2.go2osc_config import (
     SWEEP_OMEGAS,
     SWEEP_SPEEDS,
+    eval_grid,
     sweep_task_name,
 )
 from gym.utils.helpers import GYM_ROOT_DIR
@@ -106,6 +109,12 @@ def get_args(argv=None):
         help="figure path; results are saved next to it as .npz (default: "
         "logs/sweep_results/grid_eval.png, or <task>.png with --task)",
     )
+    parser.add_argument(
+        "--data_out",
+        type=str,
+        default=None,
+        help="where to save the results .npz (default: next to --out)",
+    )
     args = parser.parse_args(argv)
     if args.out is None:
         name = args.task or "grid_eval"
@@ -116,15 +125,6 @@ def get_args(argv=None):
 # Rear-first hop: the rear legs land together this fraction of a stride
 # before the front legs. Common in the three-legged policies (lead 0.15-0.3
 # stride); plain hop is nearer below a lead of about half of it.
-HOP_STAGGER = 0.2
-
-
-def staggered_hop(names, rear_lead):
-    """Ideal timing (after names[0]) of a hop whose rear legs lead by rear_lead."""
-    land = [-rear_lead if name.startswith("R") else 0.0 for name in names]
-    return tuple((t - land[0]) % 1.0 for t in land[1:])
-
-
 def named_gaits(names):
     """Ideal gaits as touchdown times of legs a, b after the reference leg,
     in fractions of the reference leg's stride."""
@@ -136,14 +136,18 @@ def named_gaits(names):
         (f"{a}+{b} | {ref}", (0.5, 0.5)),
         (f"3-beat {ref}>{a}>{b}", (1 / 3, 2 / 3)),
         (f"3-beat {ref}>{b}>{a}", (2 / 3, 1 / 3)),
-        ("rear-first hop", staggered_hop(names, HOP_STAGGER)),
     ]
 
 
 def robot_label(leg_lock):
     if leg_lock.leg is None:
         return "Intact"
-    side = {"FL": "Front-left", "FR": "Front-right", "RL": "Rear-left", "RR": "Rear-right"}
+    side = {
+        "FL": "Front-left",
+        "FR": "Front-right",
+        "RL": "Rear-left",
+        "RR": "Rear-right",
+    }
     return f"{side[leg_lock.leg]} locked ({leg_lock.pose})"
 
 
@@ -158,15 +162,19 @@ def gait_reference(legs, names):
         return legs[0], list(legs[1:]), named_gaits(names)
     index = dict(zip(names, legs))
     others = [index["FL"], index["RR"], index["RL"]]
-    return index["FR"], others, [
-        ("trot", (0.5, 0.5, 0.0)),
-        ("pace", (0.5, 0.0, 0.5)),
-        ("bound", (0.0, 0.5, 0.5)),
-        ("pronk", (0.0, 0.0, 0.0)),
-        # Trot whose second diagonal (FL, RR) lands early and split, RR
-        # first, while FR and RL stay together (seen in intact policies).
-        ("trot, split diagonal", (0.4, 0.25, 0.05)),
-    ]
+    return (
+        index["FR"],
+        others,
+        [
+            ("trot", (0.5, 0.5, 0.0)),
+            ("pace", (0.5, 0.0, 0.5)),
+            ("bound", (0.0, 0.5, 0.5)),
+            ("pronk", (0.0, 0.0, 0.0)),
+            # Trot whose second diagonal (FL, RR) lands early and split, RR
+            # first, while FR and RL stay together (seen in intact policies).
+            ("trot, split diagonal", (0.4, 0.25, 0.05)),
+        ],
+    )
 
 
 def classify(timing, gaits, tolerance):
@@ -186,6 +194,15 @@ def heading(env):
     """Each robot's heading (yaw) [rad]; base_quat is [x, y, z, w]."""
     x, y, z, w = env.base_quat.numpy().T
     return np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
+
+
+def roll_pitch(env):
+    """Each robot's roll and pitch [rad]; base_quat is [x, y, z, w]. Roll is
+    positive with the right side down, pitch positive nose down."""
+    x, y, z, w = env.base_quat.numpy().T
+    roll = np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
+    pitch = np.arcsin(np.clip(2 * (w * y - z * x), -1.0, 1.0))
+    return roll, pitch
 
 
 def rollout(env, runner, speed, args, omega=None):
@@ -214,6 +231,7 @@ def rollout(env, runner, speed, args, omega=None):
     env._post_physics_step = hooked_post_physics_step
     fell = torch.zeros(env.num_envs, dtype=torch.bool)
     contact, step_peak, vx, contact_all = [], [], [], []
+    vz, roll, pitch = [], [], []
     n_settle = int(args.settle / env.dt)
     n_steps = int((args.settle + args.measure) / env.dt)
     fell_at = np.full(env.num_envs, n_steps)
@@ -251,6 +269,10 @@ def rollout(env, runner, speed, args, omega=None):
                 contact.append(contact_all[-1])
                 step_peak.append((peak / weight).numpy().copy())
                 vx.append(env.base_lin_vel[:, 0].numpy().copy())
+                vz.append(env.base_lin_vel[:, 2].numpy().copy())
+                r, p = roll_pitch(env)
+                roll.append(r)
+                pitch.append(p)
     finally:
         env._post_physics_step = post_physics_step
     moved = env.root_states[:, :2].numpy() - start_xy
@@ -265,7 +287,54 @@ def rollout(env, runner, speed, args, omega=None):
         "peak": np.stack(step_peak, axis=1),  # [robot, step, foot], x body weight
         "impulse": impulse.numpy().copy(),  # [robot, foot], measured window
         "vx": np.stack(vx, axis=1).mean(axis=1),  # [robot]
+        "vx_steps": np.stack(vx, axis=1),  # [robot, step], m/s, body frame
+        "vz_steps": np.stack(vz, axis=1),  # [robot, step], m/s, body frame
+        "roll": np.stack(roll, axis=1),  # [robot, step], rad
+        "pitch": np.stack(pitch, axis=1),  # [robot, step], rad
+        # Oscillator frequency of each robot [Hz], for one-stride averaging.
+        "omega": env.osc_omega[:, 0].numpy().copy(),
     }
+
+
+def motion_metrics(log, speed, dt):
+    """Per robot: how unsteady the forward speed is within a stride, how much
+    the body bounces, sways and pitches, and its mean lean.
+
+    speed_fluctuation: RMS of forward speed about its one-stride moving
+        average, as a fraction of the commanded speed (0 = constant speed; a
+        stop-start gait such as a pronk is high). Slow drift over several
+        strides is removed by the moving average.
+    bounce: RMS vertical velocity [m/s].
+    roll_sway, pitch_sway: SD of roll and pitch [deg] (oscillation about the
+        robot's own mean attitude).
+    roll_lean: mean roll [deg], positive with the right side (FR, the locked
+        leg) down."""
+    n = log["vx_steps"].shape[0]
+    out = {k: np.full(n, np.nan) for k in METRIC_KEYS_MOTION}
+    for robot in range(n):
+        vx = log["vx_steps"][robot]
+        period = int(round(1.0 / (max(log["omega"][robot], 1e-3) * dt)))
+        if 1 < period < len(vx):
+            smooth = np.convolve(vx, np.ones(period) / period, mode="valid")
+            start = (period - 1) // 2
+            resid = vx[start : start + len(smooth)] - smooth
+            out["speed_fluctuation"][robot] = np.sqrt(np.mean(resid**2)) / max(
+                speed, 1e-3
+            )
+        out["bounce"][robot] = np.sqrt(np.mean(log["vz_steps"][robot] ** 2))
+        out["roll_sway"][robot] = np.degrees(log["roll"][robot].std())
+        out["pitch_sway"][robot] = np.degrees(log["pitch"][robot].std())
+        out["roll_lean"][robot] = np.degrees(log["roll"][robot].mean())
+    return out
+
+
+METRIC_KEYS_MOTION = [
+    "speed_fluctuation",
+    "bounce",
+    "roll_sway",
+    "pitch_sway",
+    "roll_lean",
+]
 
 
 def circular_mean(fractions):
@@ -276,12 +345,15 @@ def circular_mean(fractions):
     return np.where(valid.any(axis=0), np.angle(mean) / (2 * np.pi) % 1.0, np.nan)
 
 
-def robot_gait(contact, ref, others, legs, gaits, dt, args):
+def robot_gait(contact, ref, others, legs, gaits, dt, args, detail=None):
     """One robot's gait from its contact [step, foot], ignoring taps: mean
     touchdown timing of `others` after `ref` (stride fractions), its largest
     stride-to-stride spread, the most touchdowns of a leg per reference
     stride, and the label. Erratic stepping (spread above max_spread) is
-    'irregular' even if its mean timing is near a named gait."""
+    'irregular' even if its mean timing is near a named gait. A three-leg
+    robot that barely uses one leg gets a two-leg label (two_leg_label)
+    first. With `detail` (a dict), also stores each leg's touchdown count and
+    every stride's timing there."""
     min_air = int(round(0.03 / dt))
     contact = footfall.drop_taps(contact, int(round(args.min_stance / dt)))
     starts, fractions = footfall.relative_touchdowns(
@@ -294,12 +366,95 @@ def robot_gait(contact, ref, others, legs, gaits, dt, args):
         z = np.exp(2j * np.pi * f).mean() if len(f) else 0.0
         timing.append(np.angle(z) / (2 * np.pi) % 1.0 if len(f) >= 3 else np.nan)
         spread.append(np.sqrt(-2 * np.log(max(abs(z), 1e-9))) / (2 * np.pi))
-    rate = [len(footfall.touchdowns(contact[:, leg], min_air)) / max(len(starts), 1)
-            for leg in legs]
-    label = classify(timing, gaits, args.gait_tolerance)
-    if label != "not stepping" and max(spread) > args.max_spread:
-        label = "irregular"
+    counts = [len(footfall.touchdowns(contact[:, leg], min_air)) for leg in legs]
+    rate = [c / max(len(starts), 1) for c in counts]
+    lead, pair = np.nan, None
+    label = two_leg_label(contact, legs, counts, min_air, dt)
+    if label is None and len(legs) == 3 and max(counts) >= 3:
+        pair = steady_pair(contact, legs, counts, min_air, dt, args)
+        ratio = min(counts) / max(counts)
+        if UNUSED_LEG <= ratio < SUPPORT_LEG:  # third leg used now and then
+            steady = pair is not None and pair["stride_cv"] <= SUPPORT_MAX_STRIDE_CV
+            label = "2-leg + sporadic 3rd" if steady else "irregular"
+        elif max(spread) <= args.max_spread:
+            label, lead = hop_or_bound(timing, ref, others, legs)
+    if label is None:
+        # Remaining templates; for three legs the hop and the template with
+        # the complete pair together are handled by hop_or_bound.
+        templates = gaits if len(legs) != 3 else [
+            g for g in gaits if not pair_together_template(g[1], ref, others)
+        ]
+        label = classify(timing, templates, args.gait_tolerance)
+        if label != "not stepping" and max(spread) > args.max_spread:
+            label = "irregular"
+        if label == "irregular" and pair is not None and pair["support"]:
+            if pair["stride_cv"] <= SUPPORT_MAX_STRIDE_CV:
+                label = "2-leg hop + 3rd-leg support"
+        if (
+            label == "irregular"
+            and max(spread) <= args.max_spread
+            and min(counts) >= SUPPORT_LEG * max(counts)
+            and stride_cv(starts, dt) <= SUPPORT_MAX_STRIDE_CV
+        ):
+            # Steady timing, every leg used, steady stride, but no named gait.
+            label = PERIODIC
+    if detail is not None:
+        detail["support_stride_cv"] = (
+            pair["stride_cv"] if pair is not None and pair["support"] else np.nan
+        )
+        detail["stride_cv"] = pair["stride_cv"] if pair is not None else np.nan
+        detail["lead"] = lead
+        detail["third_use"] = min(counts) / max(max(counts), 1)
+        detail["leg_touchdowns"] = np.array(counts)
+        detail["stride_timing"] = np.stack([fractions[leg] for leg in others], axis=-1)
     return np.array(timing), max(spread), max(rate), label
+
+
+# A leg that lands less than UNUSED_LEG times as often as the busiest leg is
+# held up (a two-leg gait). A supporting third leg must land at least
+# SUPPORT_LEG times as often; in between it is used only now and then, which
+# is left as irregular.
+UNUSED_LEG, SUPPORT_LEG = 0.15, 0.4
+# The complete pair of a three-leg robot (both legs at one end) lands
+# together if at most PAIR_MAX_SPLIT apart. Then the gait is a 'hop' if the
+# rear legs land between HOP_MAX_REAR_LEAD before and HOP_MAX_REAR_LAG after
+# the front leg(s), else a 'bound'. Both limits sit at dips in the study's
+# distribution of rear-leg lead.
+PAIR_MAX_SPLIT = 0.2
+HOP_MAX_REAR_LEAD, HOP_MAX_REAR_LAG = 0.2, 0.125
+# '2-leg hop + 3rd-leg support' also needs a steady stride: the coefficient of
+# variation of the pair's stride duration at most this.
+SUPPORT_MAX_STRIDE_CV = 0.12  # middle of the gap in a 40-cell sample
+# Strides of per-stride timing kept per robot (10 s at 3.75 Hz is ~40).
+MAX_STRIDES = 96
+PERIODIC = "periodic, unclassified"
+TWO_LEG_GAITS = [
+    "2-leg, together",
+    "2-leg, alternating",
+    "2-leg + sporadic 3rd",
+    "2-leg hop + 3rd-leg support",
+]
+
+
+def two_leg_label(contact, legs, counts, min_air, dt):
+    """Three-leg robots that run on two legs with the third held up:
+    '2-leg, together' or '2-leg, alternating' (by the two legs' mean timing).
+    None otherwise, including robots that barely step at all."""
+    if len(legs) != 3 or max(counts) < 3:
+        return None
+    ratio = np.array(counts) / max(counts)
+    low = np.flatnonzero(ratio < UNUSED_LEG)
+    if len(low) != 1:
+        return None
+    a, b = [leg for k, leg in enumerate(legs) if k != low[0]]
+    _, fractions = footfall.relative_touchdowns(
+        contact, a, [b], min_air, int(round(2.0 / dt))
+    )
+    f = fractions[b][~np.isnan(fractions[b])]
+    if len(f) < 3:
+        return "2-leg, together"
+    lag = np.angle(np.exp(2j * np.pi * f).mean()) / (2 * np.pi)  # in [-0.5, 0.5]
+    return "2-leg, together" if abs(lag) < 0.25 else "2-leg, alternating"
 
 
 def cell_metrics(log, speed, legs, names, dt, args):
@@ -311,11 +466,26 @@ def cell_metrics(log, speed, legs, names, dt, args):
     labels, timings, peaks = [], [], []
     robot_spread = np.full(len(ok), np.nan)
     robot_rate = np.full(len(ok), np.nan)
+    # Per robot, so gaits can be reclassified later without simulating.
+    leg_touchdowns = np.full((len(ok), len(legs)), np.nan)
+    robot_lead = np.full(len(ok), np.nan)
+    robot_third_use = np.full(len(ok), np.nan)
+    robot_stride_cv = np.full(len(ok), np.nan)
+    robot_labels = np.full(len(ok), "", dtype=object)
+    stride_timing = np.full((len(ok), MAX_STRIDES, len(others)), np.nan)
     for robot in np.flatnonzero(ok):
         contact = log["contact"][robot]
+        detail = {}
         timing, robot_spread[robot], robot_rate[robot], label = robot_gait(
-            contact, ref, others, legs, gaits, dt, args
+            contact, ref, others, legs, gaits, dt, args, detail
         )
+        leg_touchdowns[robot] = detail["leg_touchdowns"]
+        robot_lead[robot] = detail["lead"]
+        robot_third_use[robot] = detail["third_use"]
+        robot_stride_cv[robot] = detail["stride_cv"]
+        robot_labels[robot] = label
+        strides = detail["stride_timing"][:MAX_STRIDES]
+        stride_timing[robot, : len(strides)] = strides
         timings.append(timing)
         labels.append(label)
         landings = [
@@ -331,23 +501,47 @@ def cell_metrics(log, speed, legs, names, dt, args):
         robot_timing[ok] = np.array(timings)
     shares = log["impulse"][ok][:, legs]
     shares = shares / shares.sum(axis=1, keepdims=True)
-    names_list = [name for name, _ in gaits] + ["irregular", "not stepping"]
+    robot_leg_shares = np.full((len(ok), len(legs)), np.nan)
+    robot_leg_shares[ok] = shares
+    names_list = [name for name, _ in gaits]
+    names_list += ["bound"] + TWO_LEG_GAITS if len(legs) == 3 else []
+    names_list += [PERIODIC, "irregular", "not stepping"]
     counts = np.array([labels.count(name) for name in names_list])
+    robot_motion = motion_metrics(log, speed, dt)
+    motion = {
+        k: np.median(v[ok]) if ok.any() else np.nan for k, v in robot_motion.items()
+    }
     return {
         "speed_ratio": log["vx"][ok].mean() / speed if ok.any() else np.nan,
         "fall_rate": log["fell"].mean(),
         "gait_counts": counts,
-        "timing": circular_mean(np.array(timings)) if timings else np.full(len(others), np.nan),
+        "timing": circular_mean(np.array(timings))
+        if timings
+        else np.full(len(others), np.nan),
         "robot_timing": robot_timing,
         "robot_spread": robot_spread,
         "robot_touchdowns": robot_rate,
+        "robot_leg_touchdowns": leg_touchdowns,
+        # Label of every robot (index into the gait names; -1 if it fell).
+        "robot_label": np.array(
+            [names_list.index(lab) if lab else -1 for lab in robot_labels]
+        ),
+        "robot_lead": robot_lead,
+        "robot_third_use": robot_third_use,
+        "robot_stride_cv": robot_stride_cv,
+        "robot_leg_shares": robot_leg_shares,
+        "robot_stride_timing": stride_timing.astype(np.float32),
         "peak_force": np.nanmean(peaks) if peaks else np.nan,
         "leg_shares": shares.mean(axis=0) if ok.any() else np.full(len(legs), np.nan),
-        "unevenness": (shares.std(axis=1) / shares.mean(axis=1)).mean() if ok.any() else np.nan,
+        "unevenness": (shares.std(axis=1) / shares.mean(axis=1)).mean()
+        if ok.any()
+        else np.nan,
         # Medians over robots that stayed up: how far off a straight line.
         "turn_rate": np.median(log["turn_rate"][ok]) if ok.any() else np.nan,
         "sideways": np.median(log["sideways"][ok]) if ok.any() else np.nan,
         "robot_turn_rate": np.where(ok, log["turn_rate"], np.nan),
+        **motion,
+        **{f"robot_{k}": np.where(ok, v, np.nan) for k, v in robot_motion.items()},
     }, names_list
 
 
@@ -382,15 +576,149 @@ def gait_shares_over_time(log, legs, names, gait_names, dt, args):
 
 # Reference categorical palette (fixed order) for the named gaits; greys for
 # irregular, not stepping and fell, which are not gaits.
-GAIT_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300",
-               "#7d5bd0", "#9c6b3a"]
-NON_GAIT_COLORS = {"irregular": "#c8c7c0", "not stepping": "#8a8980", "fell": "#3d3d3a"}
+GAIT_COLORS = [
+    "#2a78d6",
+    "#eb6834",
+    "#1baf7a",
+    "#eda100",
+    "#e87ba4",
+    "#008300",
+    "#7d5bd0",
+    "#9c6b3a",
+]
+NON_GAIT_COLORS = {
+    "periodic, unclassified": "#c9a227",  # ochre: periodic, unlike the greys
+    "irregular": "#c8c7c0",
+    "not stepping": "#8a8980",
+    "fell": "#3d3d3a",
+}
+# Two-leg gaits: one red family, so they read as related and stand apart.
+TWO_LEG_COLORS = {
+    # Red, darker the less the third leg is used (gait-mix maps shade by it).
+    "2-leg, together": "#a3172f",
+    "2-leg + sporadic 3rd": "#dc4b63",
+    "2-leg hop + 3rd-leg support": "#f4a3b0",
+    "2-leg, alternating": "#6d2d55",  # plum: held up too, but alternating
+}
+# Hop family in blue (in gait-mix maps the hop is shaded by its rear-leg
+# lead; 'rear-first hop' only appears in results from before the hop and the
+# rear-first hop were merged), the bound in purple.
+HOP_COLORS = {"hop": "#1f5fae", "rear-first hop": "#8cc0ef", "bound": "#7d5bd0"}
+# Kept out of the palette for other gaits when the hop family is shown.
+BLUE_PURPLE = {"#2a78d6", "#7d5bd0"}
+
+
+def observed_legend(names, counts):
+    """Legend handles and labels for the gaits with any robots in `counts`
+    ([..., gait]); colours come from the full list, so they do not shift."""
+    colors = gait_colors(names)
+    seen = np.asarray(counts).reshape(-1, len(names)).sum(axis=0) > 0
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c, s in zip(colors, seen) if s]
+    return handles, [n for n, s in zip(names, seen) if s]
+
+
+def steady_pair(contact, legs, counts, min_air, dt, args):
+    """Two legs landing together consistently (within a quarter stride,
+    spread at most max_spread), found by timing rather than landing counts (a
+    supporting leg can land more often than the pair, with short extra
+    steps). Returns the pair's stride variation (CV of its stride duration)
+    and whether the third leg is a 'support' leg: landing at least
+    SUPPORT_LEG times as often as the busiest leg but not in steady step with
+    the pair (which would be a three-leg gait). None if no pair qualifies."""
+    best = None
+    for k in range(3):
+        a, b = [leg for j, leg in enumerate(legs) if j != k]
+        lag, spread = relative_timing(contact, a, b, min_air, dt)
+        if abs(lag) < 0.25 and spread <= args.max_spread:
+            if best is None or spread < best[0]:
+                best = (spread, a, k)
+    if best is None:
+        return None
+    _, a, k = best
+    gaps = np.diff(footfall.touchdowns(contact[:, a], min_air)) * dt
+    gaps = gaps[gaps <= 2.0]
+    cv = gaps.std() / gaps.mean() if len(gaps) > 2 else np.nan
+    _, third_spread = relative_timing(contact, a, legs[k], min_air, dt)
+    support = counts[k] >= SUPPORT_LEG * max(counts) and not (
+        third_spread <= args.max_spread
+    )
+    return {"stride_cv": cv, "support": support}
+
+
+def stride_cv(starts, dt):
+    """Coefficient of variation of the reference leg's stride duration."""
+    gaps = np.diff(starts) * dt
+    return gaps.std() / gaps.mean() if len(gaps) > 2 else np.nan
+
+
+def relative_timing(contact, a, b, min_air, dt):
+    """Circular mean (in [-0.5, 0.5)) and spread of when leg b lands in leg
+    a's strides; NaN mean and infinite spread with fewer than 3 landings."""
+    _, fractions = footfall.relative_touchdowns(
+        contact, a, [b], min_air, int(round(2.0 / dt))
+    )
+    f = fractions[b][~np.isnan(fractions[b])]
+    if len(f) < 3:
+        return np.nan, np.inf
+    z = np.exp(2j * np.pi * f).mean()
+    lag = (np.angle(z) / (2 * np.pi) + 0.5) % 1.0 - 0.5
+    return lag, np.sqrt(-2 * np.log(max(abs(z), 1e-9))) / (2 * np.pi)
+
+
+def end_pair(legs):
+    """(pair, single) of a three-leg robot: the two legs at the same end
+    (front: FL, FR; rear: RL, RR) and the other leg; None if not three legs."""
+    if len(legs) != 3:
+        return None
+    front = [leg for leg in legs if leg < 2]
+    rear = [leg for leg in legs if leg >= 2]
+    return (rear, front[0]) if len(rear) == 2 else (front, rear[0])
+
+
+def phases(timing, ref, others):
+    """{leg: touchdown time in the reference stride}, reference leg at 0."""
+    return {ref: 0.0, **dict(zip(others, np.asarray(timing, float)))}
+
+
+def hop_or_bound(timing, ref, others, legs):
+    """('hop' or 'bound', rear-leg lead) if the complete pair lands
+    together (at most PAIR_MAX_SPLIT apart); (None, NaN) otherwise. The lead
+    is how far the rear legs land before the front leg(s), in strides
+    (negative: after)."""
+    pair, single = end_pair(legs)
+    t = phases(timing, ref, others)
+    split = abs((t[pair[0]] - t[pair[1]] + 0.5) % 1.0 - 0.5)
+    if np.isnan(split) or split > PAIR_MAX_SPLIT:
+        return None, np.nan
+    z = np.exp(2j * np.pi * np.array([t[pair[0]], t[pair[1]]])).mean()
+    pair_time = np.angle(z) / (2 * np.pi)
+    front, rear = (t[single], pair_time) if pair[0] >= 2 else (pair_time, t[single])
+    lead = (front - rear + 0.5) % 1.0 - 0.5
+    if -HOP_MAX_REAR_LAG < lead < HOP_MAX_REAR_LEAD:
+        return "hop", lead
+    return "bound", lead
+
+
+def pair_together_template(ideal, ref, others):
+    """Whether a three-leg template has the complete pair landing together
+    (the hop, and e.g. 'RL+RR | FL'): those are classified by hop_or_bound."""
+    pair, _ = end_pair(sorted([ref, *others]))
+    t = phases(ideal, ref, others)
+    return abs(t[pair[0]] - t[pair[1]]) < 1e-9
 
 
 def gait_colors(labels):
-    named = [label for label in labels if label not in NON_GAIT_COLORS]
-    colors = dict(zip(named, GAIT_COLORS))
-    colors.update(NON_GAIT_COLORS)
+    """Colour per label: fixed colours for gait families (hop, two-leg) and
+    non-gaits, the categorical palette in order for the other named gaits."""
+    special = NON_GAIT_COLORS | TWO_LEG_COLORS
+    if any(label in HOP_COLORS for label in labels):
+        special = special | HOP_COLORS
+        palette = [c for c in GAIT_COLORS if c not in BLUE_PURPLE]
+    else:
+        palette = GAIT_COLORS
+    named = [label for label in labels if label not in special]
+    colors = dict(zip(named, palette))
+    colors.update(special)
     return [colors[label] for label in labels]
 
 
@@ -398,8 +726,12 @@ def plot_over_time(results, labels, path, title, settle):
     """Small multiples: gait share over time per (speed, frequency) cell."""
     speeds, omegas = SWEEP_SPEEDS, SWEEP_OMEGAS
     fig, axes = plt.subplots(
-        len(omegas), len(speeds), figsize=(2.6 * len(speeds) + 2.2, 1.9 * len(omegas)),
-        sharex=True, sharey=True, squeeze=False,
+        len(omegas),
+        len(speeds),
+        figsize=(2.6 * len(speeds) + 2.2, 1.9 * len(omegas)),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
     )
     colors = gait_colors(labels)
     used = np.zeros(len(labels), dtype=bool)
@@ -410,13 +742,25 @@ def plot_over_time(results, labels, path, title, settle):
             ax = axes[row, j]
             cell = results.get((i, j))
             if cell is None:
-                ax.text(0.5, 0.5, "not trained", ha="center", va="center",
-                        transform=ax.transAxes, fontsize=8, color="#6b6a64")
+                ax.text(
+                    0.5,
+                    0.5,
+                    "not trained",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                    fontsize=8,
+                    color="#6b6a64",
+                )
             else:
                 times, shares = cell["times"], cell["time_shares"]
-                ax.stackplot(times, shares[:, used].T,
-                             colors=[c for c, u in zip(colors, used) if u],
-                             edgecolor="white", linewidth=0.6)
+                ax.stackplot(
+                    times,
+                    shares[:, used].T,
+                    colors=[c for c, u in zip(colors, used) if u],
+                    edgecolor="white",
+                    linewidth=0.6,
+                )
                 ax.set_xlim(times[0], times[-1])
                 ax.axvline(settle, color="#3d3d3a", lw=0.8, ls="--")
             ax.set_ylim(0, 1)
@@ -429,12 +773,24 @@ def plot_over_time(results, labels, path, title, settle):
                 ax.set_ylabel(f"{omegas[i]:g} Hz\nshare", fontsize=8)
             if row == len(omegas) - 1:
                 ax.set_xlabel("time [s]", fontsize=8)
-    axes[0, 0].yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0, decimals=0))
+    axes[0, 0].yaxis.set_major_formatter(
+        matplotlib.ticker.PercentFormatter(1.0, decimals=0)
+    )
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c, u in zip(colors, used) if u]
-    fig.legend(handles, [l for l, u in zip(labels, used) if u], loc="center right",
-               fontsize=8, frameon=False, title="gait", title_fontsize=8)
-    fig.suptitle(title + f"\ncolumns: commanded speed, rows: oscillator frequency; "
-                 f"dashed line: end of settling ({settle:g} s)", fontsize=9)
+    fig.legend(
+        handles,
+        [l for l, u in zip(labels, used) if u],
+        loc="center right",
+        fontsize=8,
+        frameon=False,
+        title="gait",
+        title_fontsize=8,
+    )
+    fig.suptitle(
+        title + f"\ncolumns: commanded speed, rows: oscillator frequency; "
+        f"dashed line: end of settling ({settle:g} s)",
+        fontsize=9,
+    )
     fig.tight_layout(rect=(0, 0, 1 - 2.0 / fig.get_figwidth(), 1))
     fig.savefig(path, dpi=130)
     print(f"Saved gait-over-time grid to {path}")
@@ -452,7 +808,9 @@ def annotate(ax, grid, fmt, color="white", image=None):
         if not np.isnan(value):
             if image is not None:
                 color = readable_text_color(image.to_rgba(value))
-            ax.text(col, row, fmt(value), ha="center", va="center", fontsize=8, color=color)
+            ax.text(
+                col, row, fmt(value), ha="center", va="center", fontsize=8, color=color
+            )
 
 
 def plot(results, gait_names, leg_names, path, title):
@@ -465,50 +823,135 @@ def plot(results, gait_names, leg_names, path, title):
             out[i, j] = reduce(cell[key])
         return out
 
-    fig, axes = plt.subplots(2, 4, figsize=(21, 9))
+    # Panels grow with the grid (5 speeds x 4 frequencies at 21 x 13.5).
+    fig, axes = plt.subplots(
+        3,
+        4,
+        figsize=(21 * max(1.0, len(speeds) / 5), 13.5 * max(1.0, len(omegas) / 4)),
+    )
     panels = [
         # Ranges fitted to the data (see below) so small differences show.
         ("speed_ratio", "measured / commanded speed", "RdBu", None, "{:.2f}"),
         ("fall_rate", "fall rate", "Reds", None, "{:.0%}"),
         (None, "dominant gait (share of robots)", None, None, None),
         ("peak_force", "peak landing force [x body weight]", "plasma", None, "{:.2f}"),
-        ("unevenness", "uneven load across legs [CV, 0 = even]", "cividis", None, "{:.2f}"),
+        (
+            "unevenness",
+            "uneven load across legs [CV, 0 = even]",
+            "cividis",
+            None,
+            "{:.2f}",
+        ),
         ("leg_shares", "load share per leg", "Greys", (1 / 3, 1.0), None),
-        ("turn_rate", "turn rate [deg/s] (median; 0 = straight)", "magma_r", None, "{:.1f}"),
-        ("sideways", "sideways drift [m] over the measured window", "magma_r", None, "{:.1f}"),
+        (
+            "turn_rate",
+            "turn rate [deg/s] (median; 0 = straight)",
+            "magma_r",
+            None,
+            "{:.1f}",
+        ),
+        (
+            "sideways",
+            "sideways drift [m] over the measured window",
+            "magma_r",
+            None,
+            "{:.1f}",
+        ),
     ]
     # Panel order: speed, falls, gait, turn rate / peak, evenness, shares, sideways.
     panels = [panels[k] for k in (0, 1, 2, 6, 3, 4, 5, 7)]
+    panels += [
+        (
+            "speed_fluctuation",
+            "speed fluctuation within a stride\n[RMS / commanded, 0 = steady]",
+            "viridis",
+            None,
+            "{:.2f}",
+        ),
+        ("roll_sway", "roll sway [deg, SD]", "viridis", None, "{:.1f}"),
+        ("pitch_sway", "pitch sway [deg, SD]", "viridis", None, "{:.1f}"),
+        (
+            "roll_lean",
+            "mean roll [deg, + = locked FR side down]",
+            "RdBu_r",
+            None,
+            "{:.1f}",
+        ),
+    ]
     for ax, (key, label, cmap, limits, fmt) in zip(axes.ravel(), panels):
         if key is None:  # categorical gait map
-            dominant = grid("gait_counts", lambda c: np.argmax(c) if c.sum() else np.nan)
-            share = grid("gait_counts", lambda c: c.max() / c.sum() if c.sum() else np.nan)
+            dominant = grid(
+                "gait_counts", lambda c: np.argmax(c) if c.sum() else np.nan
+            )
+            share = grid(
+                "gait_counts", lambda c: c.max() / c.sum() if c.sum() else np.nan
+            )
             colors = gait_colors(gait_names)
-            ax.imshow(dominant, cmap=ListedColormap(colors), vmin=-0.5,
-                      vmax=len(gait_names) - 0.5, origin="lower", aspect="auto")
+            ax.imshow(
+                dominant,
+                cmap=ListedColormap(colors),
+                vmin=-0.5,
+                vmax=len(gait_names) - 0.5,
+                origin="lower",
+                aspect="auto",
+            )
             for (row, col), value in np.ndenumerate(dominant):
                 if not np.isnan(value):
                     rgb = matplotlib.colors.to_rgb(colors[int(value)])
                     light = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] > 0.5
-                    ax.text(col, row, f"{textwrap.fill(gait_names[int(value)], 14)}\n{share[row, col]:.0%}",
-                            ha="center", va="center", fontsize=7,
-                            color="#1a1a19" if light else "white")
-            handles = [plt.Rectangle((0, 0), 1, 1, color=colors[k]) for k in range(len(gait_names))]
-            ax.legend(handles, gait_names, fontsize=6, loc="upper left",
-                      bbox_to_anchor=(1.0, 1.0), frameon=False)
+                    ax.text(
+                        col,
+                        row,
+                        f"{textwrap.fill(gait_names[int(value)], 14)}\n{share[row, col]:.0%}",
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="#1a1a19" if light else "white",
+                    )
+            handles, seen = observed_legend(
+                gait_names, [cell["gait_counts"] for cell in results.values()]
+            )
+            ax.legend(
+                handles,
+                seen,
+                fontsize=6,
+                loc="upper left",
+                bbox_to_anchor=(1.0, 1.0),
+                frameon=False,
+            )
         elif key == "leg_shares":
             shares = grid("leg_shares", lambda s: np.nanmax(s))
-            ax.imshow(shares, cmap=cmap, vmin=limits[0], vmax=limits[1],
-                      origin="lower", aspect="auto")
+            ax.imshow(
+                shares,
+                cmap=cmap,
+                vmin=limits[0],
+                vmax=limits[1],
+                origin="lower",
+                aspect="auto",
+            )
             for (i, j), cell in results.items():
                 s = cell["leg_shares"]
                 if not np.isnan(s).any():
                     text = "\n".join(f"{n} {v:.0%}" for n, v in zip(leg_names, s))
-                    ax.text(j, i, text, ha="center", va="center", fontsize=7, color="tab:red")
+                    ax.text(
+                        j,
+                        i,
+                        text,
+                        ha="center",
+                        va="center",
+                        fontsize=7,
+                        color="tab:red",
+                    )
         else:
             values = grid(key)
             vmin, vmax = limits or (np.nanmin(values), np.nanmax(values))
-            contrast = key in ("speed_ratio", "fall_rate", "turn_rate", "sideways")
+            contrast = key in (
+                "speed_ratio",
+                "fall_rate",
+                "turn_rate",
+                "sideways",
+                *METRIC_KEYS_MOTION,
+            )
             if key in ("turn_rate", "sideways"):
                 vmin = 0.0
             if key == "speed_ratio":
@@ -518,11 +961,17 @@ def plot(results, gait_names, leg_names, path, title):
                 vmin, vmax = 1.0 - spread, 1.0 + spread
             elif key == "fall_rate":
                 vmin, vmax = 0.0, max(np.nanmax(values), 0.05)
-            image = ax.imshow(values, cmap=cmap, vmin=vmin, vmax=vmax,
-                              origin="lower", aspect="auto")
+            elif key == "roll_lean":
+                spread = max(np.nanmax(np.abs(values)), 0.5)
+                vmin, vmax = -spread, spread
+            image = ax.imshow(
+                values, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower", aspect="auto"
+            )
             bar = fig.colorbar(image, ax=ax, shrink=0.85)
             if key == "fall_rate":
-                bar.ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+                bar.ax.yaxis.set_major_formatter(
+                    matplotlib.ticker.PercentFormatter(1.0)
+                )
             annotate(ax, values, fmt.format, image=image if contrast else None)
         ax.set_title(label, fontsize=10)
         ax.set_xticks(range(len(speeds)), [f"{v:g}" for v in speeds])
@@ -549,6 +998,9 @@ if __name__ == "__main__":
             return play.setup(play.get_play_args(play_argv))
 
     if args.task is not None:
+        # The task's own grid (the wide-range study goes to 4.5 m/s, 6 Hz);
+        # rebinds the module-level grid used by the plots below.
+        SWEEP_SPEEDS, SWEEP_OMEGAS = eval_grid(args.task)
         env, runner, load_path = load(args.task)
         if env.cfg.osc.omega_range is None:
             raise SystemExit(f"{args.task} was not trained with osc.omega_range")
@@ -585,14 +1037,26 @@ if __name__ == "__main__":
             print(
                 f"{task}: speed x{cell['speed_ratio']:.2f}, falls {cell['fall_rate']:.0%}, "
                 f"{gait}, peak {cell['peak_force']:.2f} BW, "
-                f"unevenness {cell['unevenness']:.2f}"
+                f"unevenness {cell['unevenness']:.2f}, "
+                f"speed fluct {cell['speed_fluctuation']:.2f}, "
+                f"roll sway {cell['roll_sway']:.1f} deg"
             )
     if not results:
         raise SystemExit("No trained sweep cells found under logs/")
 
     path = Path(args.out)
+    data_path = Path(args.data_out) if args.data_out else path.with_suffix(".npz")
+    data_path.parent.mkdir(parents=True, exist_ok=True)
     path.parent.mkdir(parents=True, exist_ok=True)
-    keys = ["speed_ratio", "fall_rate", "peak_force", "unevenness", "turn_rate", "sideways"]
+    keys = [
+        "speed_ratio",
+        "fall_rate",
+        "peak_force",
+        "unevenness",
+        "turn_rate",
+        "sideways",
+        *METRIC_KEYS_MOTION,
+    ]
     shape = (len(SWEEP_OMEGAS), len(SWEEP_SPEEDS))
     saved = {key: np.full(shape, np.nan) for key in keys}
     saved["gait_counts"] = np.zeros(shape + (len(gait_names),))
@@ -602,6 +1066,18 @@ if __name__ == "__main__":
     saved["robot_spread"] = np.full(shape + (args.robots,), np.nan)
     saved["robot_touchdowns"] = np.full(shape + (args.robots,), np.nan)
     saved["robot_turn_rate"] = np.full(shape + (args.robots,), np.nan)
+    for key in METRIC_KEYS_MOTION:
+        saved[f"robot_{key}"] = np.full(shape + (args.robots,), np.nan)
+    saved["robot_leg_touchdowns"] = np.full(
+        shape + (args.robots, len(leg_names)), np.nan
+    )
+    saved["robot_leg_shares"] = np.full(shape + (args.robots, len(leg_names)), np.nan)
+    saved["robot_label"] = np.full(shape + (args.robots,), -1, dtype=int)
+    for key in ("robot_lead", "robot_third_use", "robot_stride_cv"):
+        saved[key] = np.full(shape + (args.robots,), np.nan)
+    saved["robot_stride_timing"] = np.full(
+        shape + (args.robots, MAX_STRIDES, len(leg_names) - 1), np.nan, dtype=np.float32
+    )
     times = next(iter(results.values()))["times"]
     saved["time_shares"] = np.full(shape + (len(times), len(time_labels)), np.nan)
     runs = np.full(shape, "", dtype=object)
@@ -610,7 +1086,7 @@ if __name__ == "__main__":
             saved[key][i, j] = cell[key]
         runs[i, j] = cell["run"]
     np.savez(
-        path.with_suffix(".npz"),
+        data_path,
         speeds=np.array(SWEEP_SPEEDS),
         omegas=np.array(SWEEP_OMEGAS),
         gait_names=np.array(gait_names),
@@ -623,12 +1099,20 @@ if __name__ == "__main__":
     checkpoint = "latest" if args.checkpoint == -1 else f"model_{args.checkpoint}"
     title = (
         f"{robot_label(env.cfg.leg_lock)}, "
-        + (f"{args.task}: one policy for all cells ({runs[0, 0]})" if args.task
-           else f"one policy per cell ({checkpoint})")
+        + (
+            f"{args.task}: one policy for all cells ({runs[0, 0]})"
+            if args.task
+            else f"one policy per cell ({checkpoint})"
+        )
         + f"; {args.robots} robots "
         f"per cell from random phases, measured {args.measure:g} s after "
         f"{args.settle:g} s; physics {sim_hz:.0f} Hz"
     )
     plot(results, gait_names, leg_names, path, title)
-    plot_over_time(results, time_labels,
-                   path.with_name(path.stem + "_over_time.png"), title, args.settle)
+    plot_over_time(
+        results,
+        time_labels,
+        path.with_name(path.stem + "_over_time.png"),
+        title,
+        args.settle,
+    )

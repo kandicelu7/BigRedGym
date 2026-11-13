@@ -1,6 +1,6 @@
 """Summarize the reward study: how each setting changes the gaits and metrics.
 
-Reads logs/study_results/go2osc_study_<setting>__<run>.npz (from
+Reads logs/study_results/runs/go2osc_study_<setting>__<run>.npz (from
 study_eval.py) and compares each setting's seeds with the baseline's:
 
 - gait change: total-variation distance between the setting's and the
@@ -17,8 +17,9 @@ study_eval.py) and compares each setting's seeds with the baseline's:
 - convergence (if study_eval.py --checkpoint 1250 was run): gait distance
   between each run's 1250 and final checkpoints.
 
-Writes study_summary.csv, study_metrics.png, study_gait_maps.png and
-study_gait_shares.png next to the results.
+Writes study_summary.csv, study_metrics.png, study_gait_maps.png (majority
+gait), study_gait_mix_maps.png (every gait's share) and study_gait_shares.png
+to results/study/.
 
 Usage:
     uv run --frozen scripts/study_summary.py
@@ -39,11 +40,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
-from grid_eval import gait_colors
+from grid_eval import (
+    HOP_MAX_REAR_LAG,
+    HOP_MAX_REAR_LEAD,
+    gait_colors,
+    observed_legend,
+)
 from gym.envs.go2.go2osc_config import STUDY_BASE_WEIGHTS, STUDY_SETTINGS
 from gym.utils.helpers import GYM_ROOT_DIR
 
 PREFIX = "go2osc_study_"
+# Data (evaluation .npz, logs, caches) stays under logs/; everything meant to
+# be looked at (figures, PDFs, videos, the summary table) goes to results/.
+DATA = Path(GYM_ROOT_DIR) / "logs" / "study_results"
+FIGURES = Path(GYM_ROOT_DIR) / "results" / "study"
 # (key, label, per-cell value from an npz). Lower is better for all but none
 # are scored; they are only compared with the baseline.
 METRICS = [
@@ -57,6 +67,15 @@ METRICS = [
     ("unevenness", "uneven load [CV]", lambda d: d["unevenness"]),
     ("turn_rate", "turn rate [deg/s]", lambda d: d["turn_rate"]),
     ("sideways", "sideways drift [m per 10 s]", lambda d: d["sideways"]),
+    (
+        "speed_fluctuation",
+        "speed fluctuation in a stride [RMS / cmd]",
+        lambda d: d["speed_fluctuation"],
+    ),
+    ("bounce", "vertical bounce [RMS m/s]", lambda d: d["bounce"]),
+    ("roll_sway", "roll sway [deg, SD]", lambda d: d["roll_sway"]),
+    ("pitch_sway", "pitch sway [deg, SD]", lambda d: d["pitch_sway"]),
+    ("roll_lean", "mean roll [deg, + = FR side down]", lambda d: d["roll_lean"]),
 ]
 # One line per sweep, keyed by the weight it changes (the tracking sweep
 # scales tracking_lin_vel and heading together, named after the former).
@@ -77,11 +96,8 @@ INK, MUTED, GRID = "#1a1a19", "#6b6a64", "#e4e3dd"
 
 def get_args(argv=None):
     parser = argparse.ArgumentParser(description="Summarize the reward study")
-    parser.add_argument(
-        "--results",
-        type=str,
-        default=str(Path(GYM_ROOT_DIR) / "logs" / "study_results"),
-    )
+    parser.add_argument("--results", type=str, default=str(DATA), help="data")
+    parser.add_argument("--out", type=str, default=str(FIGURES), help="figures")
     parser.add_argument("--convergence_checkpoint", type=int, default=1250)
     return parser.parse_args(argv)
 
@@ -111,7 +127,7 @@ def load(results, suffix=""):
     """{setting: [(run, npz)]} for files <task>__<run><suffix>.npz."""
     runs = defaultdict(list)
     pattern = re.compile(rf"{PREFIX}(.+?)__(.+?){re.escape(suffix)}\.npz$")
-    for path in sorted(Path(results).glob(f"{PREFIX}*.npz")):
+    for path in sorted((Path(results) / "runs").glob(f"{PREFIX}*.npz")):
         match = pattern.fullmatch(path.name)
         if match is None or (not suffix and "__it" in match.group(2)):
             continue
@@ -119,6 +135,28 @@ def load(results, suffix=""):
         if setting in STUDY_SETTINGS:
             runs[setting].append((run, dict(np.load(path, allow_pickle=True))))
     return runs
+
+
+def comparable(early, runs):
+    """The earlier-checkpoint results whose gait labels match the final
+    results' (results from an older classifier cannot be compared)."""
+    out, skipped = {}, 0
+    for setting, group in early.items():
+        final = dict(runs.get(setting, []))
+        keep = [
+            (run, d)
+            for run, d in group
+            if run in final and list(d["gait_names"]) == list(final[run]["gait_names"])
+        ]
+        skipped += len(group) - len(keep)
+        if keep:
+            out[setting] = keep
+    if skipped:
+        print(
+            f"Convergence: skipped {skipped} earlier-checkpoint results with "
+            "different gait labels (older classifier); re-evaluate them to compare."
+        )
+    return out
 
 
 def shares(d):
@@ -234,7 +272,11 @@ def plot_metrics(rows, runs, path):
     panels += [(key, label) for key, label, _ in METRICS]
     by = {r["setting"]: r for r in rows}
     base = by.get("baseline")
-    fig, axes = plt.subplots(2, 4, figsize=(17, 7.5))
+    ncols = 4
+    nrows = -(-len(panels) // ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(17, 3.75 * nrows))
+    for ax in axes.ravel()[len(panels) :]:
+        ax.axis("off")
     for ax, (key, label) in zip(axes.ravel(), panels):
         style(ax)
         for sweep, color in SWEEP_COLORS.items():
@@ -332,10 +374,15 @@ def plot_gait_maps(runs, path):
     names = list(any_d["gait_names"])
     speeds, omegas = any_d["speeds"], any_d["omegas"]
     colors = gait_colors(names)
+    ncols = min(5, len(settings))
+    nrows = -(-len(settings) // ncols)
     fig, axes = plt.subplots(
-        1, len(settings), figsize=(4.2 * len(settings) + 1.6, 4.4), squeeze=False
+        nrows, ncols, figsize=(4.2 * ncols + 1.6, 4.0 * nrows + 0.4), squeeze=False
     )
-    for ax, setting in zip(axes[0], settings):
+    spare = axes.ravel()[len(settings) :]
+    for ax in spare:
+        ax.axis("off")
+    for ax, setting in zip(axes.ravel(), settings):
         group = runs[setting]
         pooled = np.mean([shares(d) for _, d in group], axis=0)
         majority = [shares(d).argmax(axis=-1) for _, d in group]
@@ -370,15 +417,229 @@ def plot_gait_maps(runs, path):
         ax.set_yticks(range(len(omegas)), [f"{w:g}" for w in omegas], fontsize=8)
         ax.set_xlabel("commanded speed [m/s]", fontsize=8)
         ax.set_ylabel("oscillator frequency [Hz]", fontsize=8)
-    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in colors]
-    fig.legend(handles, names, loc="center right", frameon=False, fontsize=8)
+    handles, seen = observed_legend(
+        names, [d["gait_counts"] for s in settings for _, d in runs[s]]
+    )
     fig.suptitle(
         "Majority gait pooled over seeds. Cell text: pooled share of robots; "
         "seeds whose own majority gait matches",
         fontsize=10,
         color=INK,
     )
-    fig.tight_layout(rect=(0, 0, 0.88, 0.93))
+    if len(spare):  # legend in the first empty panel
+        spare[0].legend(handles, seen, loc="center left", frameon=False, fontsize=9)
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
+    else:
+        fig.legend(handles, seen, loc="center right", frameon=False, fontsize=8)
+        fig.tight_layout(rect=(0, 0, 0.88, 0.93))
+    fig.savefig(path, dpi=120)
+    print(f"Saved {path}")
+
+
+# Shades within a gait family (gait-mix maps): the hop by its mean rear-leg
+# lead (dark: rear legs land after the front leg; light: before), the two-leg
+# gaits by how much the third leg is used (dark: held up; light: every stride).
+# One scale for the hop and the bound, by rear-leg lead (how far the rear
+# pair lands before the front leg, in strides; circular, so -0.5 and +0.5
+# are the same): bound with the front leg well ahead in dark purple, the hop
+# range from dark to light blue, bound with the rear legs well ahead in light
+# lavender. Lighter = rear legs earlier.
+_LEAD_NODES = [
+    (-0.5, "#1e0a3c"),
+    (-HOP_MAX_REAR_LAG, "#0b3d91"),
+    (HOP_MAX_REAR_LEAD, "#b3d6f7"),
+    (0.5, "#e6dcf5"),
+]
+LEAD_SHADE = (
+    matplotlib.colors.LinearSegmentedColormap.from_list(
+        "lead", [(v + 0.5, c) for v, c in _LEAD_NODES]
+    ),
+    matplotlib.colors.Normalize(-0.5, 0.5),
+    "hop / bound: rear lead\nhop = inside",
+)
+USE_SHADE = (
+    matplotlib.colors.LinearSegmentedColormap.from_list("use", ["#7f0f22", "#f9c9d1"]),
+    matplotlib.colors.Normalize(0.0, 1.0),
+    "2-leg: 3rd leg use",
+)
+USE_LABELS = ["2-leg, together", "2-leg + sporadic 3rd", "2-leg hop + 3rd-leg support"]
+
+
+def shades(ds, names):
+    """{label: (per-cell mean, shade)} from the per-robot values of the npz
+    dicts in `ds` (pooled): the hop's rear-leg lead and the two-leg gaits'
+    third-leg use. Empty for results without per-robot labels."""
+    if not all("robot_label" in d for d in ds):
+        return {}
+    label = np.concatenate([d["robot_label"] for d in ds], axis=-1)
+    out = {}
+    for name, key, shade in [
+        ("hop", "robot_lead", LEAD_SHADE),
+        ("bound", "robot_lead", LEAD_SHADE),
+    ] + [(n, "robot_third_use", USE_SHADE) for n in USE_LABELS]:
+        if name not in names:
+            continue
+        value = np.concatenate([d[key] for d in ds], axis=-1)
+        mask = label == names.index(name)
+        with np.errstate(invalid="ignore"):
+            mean = np.where(mask, value, 0).sum(-1) / mask.sum(-1)
+        out[name] = (mean, shade)
+    return out
+
+
+def gait_mix(ax, share, names, label_min=0.2, shade=None):
+    """Each cell split left to right into one segment per gait, its width the
+    gait's share of robots (share: [omega, speed, gait], rows summing to 1).
+    Gaits keep the same order in every cell so a gait can be followed across
+    cells; segments of at least `label_min` carry their share. With `shade`
+    (from shades()), the hop and two-leg segments are coloured by their
+    per-cell value, which is also printed. Returns the shades used."""
+    colors = gait_colors(names)
+    shade = shade or {}
+    used = {}
+    rows, cols = share.shape[:2]
+    for i in range(rows):
+        for j in range(cols):
+            x = j - 0.5
+            if not share[i, j].sum():
+                ax.add_patch(
+                    plt.Rectangle(
+                        (x, i - 0.5),
+                        1,
+                        1,
+                        facecolor="white",
+                        edgecolor=GRID,
+                        hatch="//",
+                    )
+                )
+                continue
+            for g, s in enumerate(share[i, j]):
+                if s <= 0:
+                    continue
+                face, note = colors[g], ""
+                if names[g] in shade and not np.isnan(shade[names[g]][0][i, j]):
+                    value, (cmap, norm, title) = (
+                        shade[names[g]][0][i, j],
+                        shade[names[g]][1],
+                    )
+                    face = cmap(norm(value))
+                    used[title] = (cmap, norm)
+                    note = (
+                        f"\n{value:+.2f}"
+                        if names[g] in ("hop", "bound")
+                        else f"\n{value:.0%} use"
+                    )
+                ax.add_patch(
+                    plt.Rectangle(
+                        (x, i - 0.5),
+                        s,
+                        1,
+                        facecolor=face,
+                        edgecolor="white",
+                        linewidth=0.4,
+                    )
+                )
+                if s >= label_min:
+                    rgb = matplotlib.colors.to_rgb(face)
+                    light = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] > 0.5
+                    ax.text(
+                        x + s / 2,
+                        i,
+                        f"{s:.0%}{note}",
+                        ha="center",
+                        va="center",
+                        fontsize=6.5,
+                        color=INK if light else "white",
+                    )
+                x += s
+    for j in range(cols + 1):
+        ax.axvline(j - 0.5, color="white", lw=3)
+    for i in range(rows + 1):
+        ax.axhline(i - 0.5, color="white", lw=3)
+    ax.set_xlim(-0.5, cols - 0.5)
+    ax.set_ylim(-0.5, rows - 0.5)
+    return used
+
+
+def mark_hop_range(bar):
+    """Lines at the hop's limits on a rear-lead colour bar (bound outside)."""
+    for v in (-HOP_MAX_REAR_LAG, HOP_MAX_REAR_LEAD):
+        bar.ax.axhline(v, color=INK, lw=0.8)
+    bar.set_ticks([-0.5, -HOP_MAX_REAR_LAG, 0, HOP_MAX_REAR_LEAD, 0.5])
+    bar.ax.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%+.2f"))
+
+
+def shade_bars(fig, used, left, bottom, height=0.3, step=0.06):
+    """Small vertical colour bars for the shades a gait-mix map used, side by
+    side from figure position (left, bottom)."""
+    for k, (title, (cmap, norm)) in enumerate(sorted(used.items())):
+        cax = fig.add_axes([left + k * step, bottom, 0.012, height])
+        bar = fig.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
+        bar.ax.tick_params(labelsize=7)
+        if "use" in title:
+            bar.ax.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+        else:
+            mark_hop_range(bar)
+        cax.set_title(title.replace(": ", ":\n"), fontsize=7, loc="left")
+
+
+def plot_gait_mix_maps(runs, path):
+    """Gait mix per cell, pooled over seeds, for every setting."""
+    settings = [s for s in STUDY_SETTINGS if runs.get(s)]
+    any_d = runs[settings[0]][0][1]
+    names = list(any_d["gait_names"])
+    speeds, omegas = any_d["speeds"], any_d["omegas"]
+    ncols = min(3, len(settings))
+    nrows = -(-len(settings) // ncols)
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(6.2 * ncols + 1.8, 4.6 * nrows), squeeze=False
+    )
+    for ax in axes.ravel()[len(settings) :]:
+        ax.axis("off")
+    used = {}
+    for ax, setting in zip(axes.ravel(), settings):
+        pooled = np.mean([shares(d) for _, d in runs[setting]], axis=0)
+        used.update(
+            gait_mix(
+                ax,
+                pooled,
+                names,
+                label_min=0.25,
+                shade=shades([d for _, d in runs[setting]], names),
+            )
+        )
+        ax.set_title(f"{setting} ({len(runs[setting])} seeds)", fontsize=10, color=INK)
+        ax.set_xticks(range(len(speeds)), [f"{v:g}" for v in speeds], fontsize=8)
+        ax.set_yticks(range(len(omegas)), [f"{w:g}" for w in omegas], fontsize=8)
+        ax.set_xlabel("commanded speed [m/s]", fontsize=8)
+        ax.set_ylabel("oscillator frequency [Hz]", fontsize=8)
+    handles, seen = observed_legend(
+        names, [d["gait_counts"] for s in settings for _, d in runs[s]]
+    )
+    fig.suptitle(
+        "Gait mix per cell, pooled over seeds: segment width = share of robots "
+        "(same gait order in every cell; shares of 25% or more labelled)",
+        fontsize=10,
+        color=INK,
+    )
+    spare = axes.ravel()[len(settings) :]
+    if len(spare):
+        # Legend and colour bars go in the first empty panel.
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        box = spare[0].get_position()
+        spare[0].legend(handles, seen, loc="upper left", frameon=False, fontsize=9)
+        shade_bars(
+            fig,
+            used,
+            left=box.x0 + 0.55 * box.width,
+            bottom=box.y0 + 0.05 * box.height,
+            height=0.6 * box.height,
+            step=0.2 * box.width,
+        )
+    else:
+        fig.legend(handles, seen, loc="center right", frameon=False, fontsize=9)
+        fig.tight_layout(rect=(0, 0, 0.86, 0.95))
+        shade_bars(fig, used, left=0.875, bottom=0.08)
     fig.savefig(path, dpi=120)
     print(f"Saved {path}")
 
@@ -408,7 +669,7 @@ def plot_gait_shares(runs, path):
             height=0.8,
             edgecolor="white",
             linewidth=1,
-            label=name,
+            label=name if rows[:, g].any() else None,
         )
         left += rows[:, g]
     ax.set_yticks(y, labels, fontsize=7)
@@ -438,13 +699,15 @@ def main():
     if not runs:
         raise SystemExit(f"no {PREFIX}*.npz under {results}; run study_eval.py first")
     rows = summarize(runs)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
 
     columns = list(dict.fromkeys(k for r in rows for k in r))
-    with open(results / "study_summary.csv", "w", newline="") as f:
+    with open(out / "study_summary.csv", "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
-    print(f"Saved {results / 'study_summary.csv'}\n")
+    print(f"Saved {out / 'study_summary.csv'}\n")
 
     print(
         f"{'setting':10s} seeds  gait-change (p)   agree  entropy  "
@@ -467,7 +730,7 @@ def main():
         )
 
     # Convergence: did each run's gait still change after the earlier checkpoint?
-    early = load(results, suffix=f"__it{args.convergence_checkpoint}")
+    early = comparable(load(results, suffix=f"__it{args.convergence_checkpoint}"), runs)
     if early:
         print(f"\nGait change from iteration {args.convergence_checkpoint} to final:")
         for setting, group in early.items():
@@ -479,9 +742,10 @@ def main():
                         f"{tv_distance(shares(d), shares(final[run])):.2f}"
                     )
 
-    plot_metrics(rows, runs, results / "study_metrics.png")
-    plot_gait_maps(runs, results / "study_gait_maps.png")
-    plot_gait_shares(runs, results / "study_gait_shares.png")
+    plot_metrics(rows, runs, out / "study_metrics.png")
+    plot_gait_maps(runs, out / "study_gait_maps.png")
+    plot_gait_mix_maps(runs, out / "study_gait_mix_maps.png")
+    plot_gait_shares(runs, out / "study_gait_shares.png")
 
 
 if __name__ == "__main__":
