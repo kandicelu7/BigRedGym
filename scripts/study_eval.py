@@ -35,6 +35,9 @@ def get_args(argv=None):
     parser.add_argument("--robots", type=int, default=64, help="robots per cell")
     parser.add_argument("--jobs", type=int, default=4, help="evaluations at once")
     parser.add_argument("--threads", type=int, default=4, help="CPU threads per job")
+    parser.add_argument(
+        "--device", type=str, default="cpu", help="cpu or cuda:0 (MuJoCo Warp, much faster)"
+    )
     parser.add_argument("--dry_run", action="store_true", help="list, don't run")
     parser.add_argument(
         "--wide",
@@ -108,6 +111,8 @@ def main():
             str(PLOTS / f"{out.stem}.png"),
             "--data_out",
             str(out),
+            "--device",
+            args.device,
         ]
         log = open(LOGS / f"{out.stem}.log", "w")
         proc = subprocess.Popen(

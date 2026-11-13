@@ -19,10 +19,12 @@ study_eval.py) and compares each setting's seeds with the baseline's:
 
 Writes study_summary.csv, study_metrics.png, study_gait_maps.png (majority
 gait), study_gait_mix_maps.png (every gait's share) and study_gait_shares.png
-to results/study/.
+to results/study/. With --wide, the same for the wide-range study
+(go2osc_wide_*, 63 cells to 4.5 m/s and 6 Hz) in results/study/wide/.
 
 Usage:
     uv run --frozen scripts/study_summary.py
+    uv run --frozen scripts/study_summary.py --wide
 """
 
 import argparse
@@ -46,9 +48,10 @@ from grid_eval import (
     gait_colors,
     observed_legend,
 )
-from gym.envs.go2.go2osc_config import STUDY_BASE_WEIGHTS, STUDY_SETTINGS
+from gym.envs.go2.go2osc_config import STUDY_BASE_WEIGHTS, STUDY_SETTINGS, WIDE_SETTINGS
 from gym.utils.helpers import GYM_ROOT_DIR
 
+# Rebound by use_wide() for the wide-range study.
 PREFIX = "go2osc_study_"
 # Data (evaluation .npz, logs, caches) stays under logs/; everything meant to
 # be looked at (figures, PDFs, videos, the summary table) goes to results/.
@@ -84,22 +87,62 @@ SWEEP_KEYS = {
     "tracking": "tracking_lin_vel",
     "even load": "even_load",
     "peak load": "peak_load",
+    # Wide-range study only. roll_sigma is a reward setting, the rest weights.
+    "roll tolerance": "roll_sigma",
+    "orientation": "orientation",
+    "steady speed": "steady_speed",
 }
 SWEEP_COLORS = {
     "gait": "#2a78d6",
     "tracking": "#eb6834",
     "even load": "#1baf7a",
     "peak load": "#eda100",
+    "roll tolerance": "#8a5cc7",
+    "orientation": "#c2477f",
+    "steady speed": "#5b6b7a",
 }
+# Baseline values of the swept quantities that STUDY_BASE_WEIGHTS leaves out
+# (go2osc_config: reward_settings.roll_sigma, weights.orientation).
+BASE_VALUES = {**STUDY_BASE_WEIGHTS, "roll_sigma": 0.25, "orientation": 1.0}
 INK, MUTED, GRID = "#1a1a19", "#6b6a64", "#e4e3dd"
 
 
 def get_args(argv=None):
     parser = argparse.ArgumentParser(description="Summarize the reward study")
     parser.add_argument("--results", type=str, default=str(DATA), help="data")
-    parser.add_argument("--out", type=str, default=str(FIGURES), help="figures")
+    parser.add_argument(
+        "--out", type=str, default=None, help="figures (default: results/study[/wide])"
+    )
     parser.add_argument("--convergence_checkpoint", type=int, default=1250)
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--wide",
+        action="store_true",
+        help="the wide-range study (go2osc_wide_*: to 4.5 m/s and 6 Hz)",
+    )
+    args = parser.parse_args(argv)
+    if args.out is None:
+        args.out = str(FIGURES / "wide" if args.wide else FIGURES)
+    return args
+
+
+def use_wide():
+    """Point this module (and study_figures, which imports it) at the
+    wide-range study: its task prefix and settings."""
+    global PREFIX, STUDY_SETTINGS
+    PREFIX = "go2osc_wide_"
+    STUDY_SETTINGS = WIDE_SETTINGS
+
+
+def swept(changed, key):
+    """Value a setting gives `key`, looking inside reward_settings too."""
+    if key in changed:
+        return changed[key]
+    return changed.get("reward_settings", {}).get(key)
+
+
+def n_cells(runs):
+    d = next(iter(runs.values()))[0][1]
+    return len(d["speeds"]) * len(d["omegas"])
 
 
 def sweep_of(setting):
@@ -109,18 +152,21 @@ def sweep_of(setting):
     if not changed:
         return None, 0, None
     for sweep, key in SWEEP_KEYS.items():
-        if key in changed:
+        if swept(changed, key) is not None:
             break
     else:
         raise ValueError(f"setting {setting!r} changes no known sweep weight")
-    return sweep, sweep_weights(sweep).index(changed[key]), changed[key]
+    value = swept(changed, key)
+    return sweep, sweep_weights(sweep).index(value), value
 
 
 def sweep_weights(sweep):
     """Weights along a sweep, starting with the baseline's."""
     key = SWEEP_KEYS[sweep]
-    levels = sorted(w[key] for w in STUDY_SETTINGS.values() if key in w)
-    return [STUDY_BASE_WEIGHTS.get(key, 0.0)] + levels
+    levels = sorted(
+        swept(w, key) for w in STUDY_SETTINGS.values() if swept(w, key) is not None
+    )
+    return [BASE_VALUES.get(key, 0.0)] + levels
 
 
 def load(results, suffix=""):
@@ -682,7 +728,9 @@ def plot_gait_shares(runs, path):
         ax.spines[side].set_visible(False)
     ax.legend(loc="upper left", bbox_to_anchor=(1.0, 1.0), frameon=False, fontsize=8)
     ax.set_title(
-        "Share of robots in each gait over all 20 cells", fontsize=10, color=INK
+        f"Share of robots in each gait over all {n_cells(runs)} cells",
+        fontsize=10,
+        color=INK,
     )
     fig.tight_layout()
     fig.savefig(path, dpi=120)
@@ -691,6 +739,8 @@ def plot_gait_shares(runs, path):
 
 def main():
     args = get_args()
+    if args.wide:
+        use_wide()
     # Metrics missing from older results are NaN; their empty means are expected.
     warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
     warnings.filterwarnings("ignore", "Degrees of freedom", RuntimeWarning)

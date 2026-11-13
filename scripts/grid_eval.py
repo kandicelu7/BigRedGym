@@ -69,6 +69,12 @@ def get_args(argv=None):
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="cpu (MuJoCo) or cuda:0 (MuJoCo Warp, as in training; much faster)",
+    )
+    parser.add_argument(
         "--contact_threshold",
         type=float,
         default=0.05,
@@ -192,14 +198,14 @@ def classify(timing, gaits, tolerance):
 
 def heading(env):
     """Each robot's heading (yaw) [rad]; base_quat is [x, y, z, w]."""
-    x, y, z, w = env.base_quat.numpy().T
+    x, y, z, w = env.base_quat.cpu().numpy().T
     return np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
 def roll_pitch(env):
     """Each robot's roll and pitch [rad]; base_quat is [x, y, z, w]. Roll is
     positive with the right side down, pitch positive nose down."""
-    x, y, z, w = env.base_quat.numpy().T
+    x, y, z, w = env.base_quat.cpu().numpy().T
     roll = np.arctan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
     pitch = np.arcsin(np.clip(2 * (w * y - z * x), -1.0, 1.0))
     return roll, pitch
@@ -217,7 +223,7 @@ def rollout(env, runner, speed, args, omega=None):
         env.osc_omega[:] = omega
     weight = 9.81 * env._backend.link_mass.sum(dim=1, keepdim=True)
     sim_dt = env.dt / env.cfg.control.decimation
-    peak = torch.zeros(env.num_envs, len(env.feet_indices))
+    peak = torch.zeros(env.num_envs, len(env.feet_indices), device=env.device)
     impulse = torch.zeros_like(peak)
     post_physics_step = env._post_physics_step
 
@@ -229,7 +235,7 @@ def rollout(env, runner, speed, args, omega=None):
         impulse.add_(force * sim_dt)
 
     env._post_physics_step = hooked_post_physics_step
-    fell = torch.zeros(env.num_envs, dtype=torch.bool)
+    fell = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     contact, step_peak, vx, contact_all = [], [], [], []
     vz, roll, pitch = [], [], []
     n_settle = int(args.settle / env.dt)
@@ -255,11 +261,11 @@ def rollout(env, runner, speed, args, omega=None):
                 impulse.zero_()
             env.step()
             fell |= env.terminated
-            fell_at[env.terminated.numpy() & (fell_at == n_steps)] = i
+            fell_at[env.terminated.cpu().numpy() & (fell_at == n_steps)] = i
             load = env.contact_forces[:, env.feet_indices, 2] / weight
-            contact_all.append((load > args.contact_threshold).numpy().copy())
+            contact_all.append((load > args.contact_threshold).cpu().numpy().copy())
             if i == n_settle:
-                start_xy = env.root_states[:, :2].numpy().copy()
+                start_xy = env.root_states[:, :2].cpu().numpy().copy()
                 start_yaw = last_yaw = heading(env)
             elif i > n_settle:
                 yaw = heading(env)
@@ -267,32 +273,32 @@ def rollout(env, runner, speed, args, omega=None):
                 last_yaw = yaw
             if i >= n_settle:
                 contact.append(contact_all[-1])
-                step_peak.append((peak / weight).numpy().copy())
-                vx.append(env.base_lin_vel[:, 0].numpy().copy())
-                vz.append(env.base_lin_vel[:, 2].numpy().copy())
+                step_peak.append((peak / weight).cpu().numpy().copy())
+                vx.append(env.base_lin_vel[:, 0].cpu().numpy().copy())
+                vz.append(env.base_lin_vel[:, 2].cpu().numpy().copy())
                 r, p = roll_pitch(env)
                 roll.append(r)
                 pitch.append(p)
     finally:
         env._post_physics_step = post_physics_step
-    moved = env.root_states[:, :2].numpy() - start_xy
+    moved = env.root_states[:, :2].cpu().numpy() - start_xy
     sideways = -np.sin(start_yaw) * moved[:, 0] + np.cos(start_yaw) * moved[:, 1]
     return {
         "turn_rate": np.degrees(np.abs(turn)) / args.measure,  # [robot], deg/s
         "sideways": np.abs(sideways),  # [robot], m over the measured window
-        "fell": fell.numpy(),
+        "fell": fell.cpu().numpy(),
         "fell_at": fell_at,  # [robot], first step fallen (n_steps if never)
         "contact_all": np.stack(contact_all, axis=1),  # [robot, step, foot], whole run
         "contact": np.stack(contact, axis=1),  # [robot, step, foot]
         "peak": np.stack(step_peak, axis=1),  # [robot, step, foot], x body weight
-        "impulse": impulse.numpy().copy(),  # [robot, foot], measured window
+        "impulse": impulse.cpu().numpy().copy(),  # [robot, foot], measured window
         "vx": np.stack(vx, axis=1).mean(axis=1),  # [robot]
         "vx_steps": np.stack(vx, axis=1),  # [robot, step], m/s, body frame
         "vz_steps": np.stack(vz, axis=1),  # [robot, step], m/s, body frame
         "roll": np.stack(roll, axis=1),  # [robot, step], rad
         "pitch": np.stack(pitch, axis=1),  # [robot, step], rad
         # Oscillator frequency of each robot [Hz], for one-stride averaging.
-        "omega": env.osc_omega[:, 0].numpy().copy(),
+        "omega": env.osc_omega[:, 0].cpu().numpy().copy(),
     }
 
 
@@ -359,46 +365,67 @@ def robot_gait(contact, ref, others, legs, gaits, dt, args, detail=None):
     starts, fractions = footfall.relative_touchdowns(
         contact, ref, others, min_air, int(round(2.0 / dt))
     )
-    timing, spread = [], []
-    for leg in others:
-        f = fractions[leg][~np.isnan(fractions[leg])]
-        # Circular mean and std of the touchdown time, as stride fractions.
-        z = np.exp(2j * np.pi * f).mean() if len(f) else 0.0
-        timing.append(np.angle(z) / (2 * np.pi) % 1.0 if len(f) >= 3 else np.nan)
-        spread.append(np.sqrt(-2 * np.log(max(abs(z), 1e-9))) / (2 * np.pi))
+    lift_fractions = footfall.relative_liftoffs(
+        contact, ref, others, min_air, int(round(2.0 / dt))
+    )
+    timing, spread = circular_timing(fractions, others)
+    lift_timing, lift_spread = circular_timing(lift_fractions, others)
     counts = [len(footfall.touchdowns(contact[:, leg], min_air)) for leg in legs]
     rate = [c / max(len(starts), 1) for c in counts]
     lead, pair = np.nan, None
     label = two_leg_label(contact, legs, counts, min_air, dt)
+    once = max(counts) > 0 and min(counts) >= ONCE_PER_STRIDE * max(counts)
     if label is None and len(legs) == 3 and max(counts) >= 3:
         pair = steady_pair(contact, legs, counts, min_air, dt, args)
         ratio = min(counts) / max(counts)
         if UNUSED_LEG <= ratio < SUPPORT_LEG:  # third leg used now and then
             steady = pair is not None and pair["stride_cv"] <= SUPPORT_MAX_STRIDE_CV
             label = "2-leg + sporadic 3rd" if steady else "irregular"
+        elif not once:
+            # A leg steps more often than the others (e.g. twice per stride):
+            # no named gait fits; periodic or irregular below.
+            label = None
         elif max(spread) <= args.max_spread:
             label, lead = hop_or_bound(timing, ref, others, legs)
-    if label is None:
+    if label is None and (once or len(legs) != 3):
         # Remaining templates; for three legs the hop and the template with
         # the complete pair together are handled by hop_or_bound.
-        templates = gaits if len(legs) != 3 else [
-            g for g in gaits if not pair_together_template(g[1], ref, others)
-        ]
+        templates = (
+            gaits
+            if len(legs) != 3
+            else [g for g in gaits if not pair_together_template(g[1], ref, others)]
+        )
         label = classify(timing, templates, args.gait_tolerance)
         if label != "not stepping" and max(spread) > args.max_spread:
             label = "irregular"
-        if label == "irregular" and pair is not None and pair["support"]:
-            if pair["stride_cv"] <= SUPPORT_MAX_STRIDE_CV:
-                label = "2-leg hop + 3rd-leg support"
-        if (
-            label == "irregular"
-            and max(spread) <= args.max_spread
-            and min(counts) >= SUPPORT_LEG * max(counts)
-            and stride_cv(starts, dt) <= SUPPORT_MAX_STRIDE_CV
-        ):
-            # Steady timing, every leg used, steady stride, but no named gait.
-            label = PERIODIC
+    if label is None:  # three legs, one leg stepping more often than another
+        label = "irregular"
+    if label == "irregular" and pair is not None and pair["support"]:
+        if pair["stride_cv"] <= SUPPORT_MAX_STRIDE_CV:
+            label = "2-leg hop + 3rd-leg support"
+    if (
+        label == "irregular"
+        and max(spread) <= args.max_spread
+        and min(counts) >= SUPPORT_LEG * max(counts)
+        and stride_cv(starts, dt) <= SUPPORT_MAX_STRIDE_CV
+    ):
+        # Steady timing, every leg used, steady stride, but no named gait.
+        label = PERIODIC
+    if (
+        len(legs) == 3
+        and once
+        and label not in ("hop", "irregular", "not stepping", *TWO_LEG_GAITS)
+        and max(spread) <= args.max_spread
+        and synchronous_liftoff(lift_timing, lift_spread, args.max_spread)
+    ):
+        # Legs push off together but land one after another (a bound or
+        # any other steady timing): a hop with a staggered landing.
+        label = STAGGERED
     if detail is not None:
+        detail["liftoff_timing"] = np.array(lift_timing)
+        detail["liftoff_spread"] = max(lift_spread) if lift_spread else np.nan
+        # Share of the measured time each leg is on the ground (duty factor).
+        detail["duty"] = contact[:, legs].mean(axis=0)
         detail["support_stride_cv"] = (
             pair["stride_cv"] if pair is not None and pair["support"] else np.nan
         )
@@ -408,6 +435,28 @@ def robot_gait(contact, ref, others, legs, gaits, dt, args, detail=None):
         detail["leg_touchdowns"] = np.array(counts)
         detail["stride_timing"] = np.stack([fractions[leg] for leg in others], axis=-1)
     return np.array(timing), max(spread), max(rate), label
+
+
+def circular_timing(fractions, legs):
+    """Circular mean (in [0, 1)) and std of each leg's per-stride timing,
+    as stride fractions; NaN mean with fewer than 3 strides."""
+    timing, spread = [], []
+    for leg in legs:
+        f = fractions[leg][~np.isnan(fractions[leg])]
+        z = np.exp(2j * np.pi * f).mean() if len(f) else 0.0
+        timing.append(np.angle(z) / (2 * np.pi) % 1.0 if len(f) >= 3 else np.nan)
+        spread.append(np.sqrt(-2 * np.log(max(abs(z), 1e-9))) / (2 * np.pi))
+    return timing, spread
+
+
+def synchronous_liftoff(lift_timing, lift_spread, max_spread):
+    """True if every leg lifts off within LIFTOFF_SYNC (stride fraction) of
+    the reference leg and of each other, consistently stride to stride."""
+    t = np.array([0.0, *lift_timing])
+    if np.isnan(t).any() or max(lift_spread) > max_spread:
+        return False
+    gaps = np.abs((t[:, None] - t[None, :] + 0.5) % 1.0 - 0.5)
+    return gaps.max() <= LIFTOFF_SYNC
 
 
 # A leg that lands less than UNUSED_LEG times as often as the busiest leg is
@@ -428,6 +477,14 @@ SUPPORT_MAX_STRIDE_CV = 0.12  # middle of the gap in a 40-cell sample
 # Strides of per-stride timing kept per robot (10 s at 3.75 Hz is ~40).
 MAX_STRIDES = 96
 PERIODIC = "periodic, unclassified"
+# Named gaits need every leg to land about once per stride: the least-used
+# leg at least ONCE_PER_STRIDE times as often as the most-used one.
+ONCE_PER_STRIDE = 0.75
+# Legs that lift off together (all within LIFTOFF_SYNC of a stride) but do not
+# land as a hop (e.g. one after another over a quarter stride): a hop whose
+# landing is staggered, not a gait with separate beats.
+LIFTOFF_SYNC = 0.1
+STAGGERED = "hop, staggered landing"
 TWO_LEG_GAITS = [
     "2-leg, together",
     "2-leg, alternating",
@@ -471,6 +528,9 @@ def cell_metrics(log, speed, legs, names, dt, args):
     robot_lead = np.full(len(ok), np.nan)
     robot_third_use = np.full(len(ok), np.nan)
     robot_stride_cv = np.full(len(ok), np.nan)
+    robot_liftoff_timing = np.full((len(ok), len(others)), np.nan)
+    robot_liftoff_spread = np.full(len(ok), np.nan)
+    robot_duty = np.full((len(ok), len(legs)), np.nan)
     robot_labels = np.full(len(ok), "", dtype=object)
     stride_timing = np.full((len(ok), MAX_STRIDES, len(others)), np.nan)
     for robot in np.flatnonzero(ok):
@@ -483,6 +543,9 @@ def cell_metrics(log, speed, legs, names, dt, args):
         robot_lead[robot] = detail["lead"]
         robot_third_use[robot] = detail["third_use"]
         robot_stride_cv[robot] = detail["stride_cv"]
+        robot_liftoff_timing[robot] = detail["liftoff_timing"]
+        robot_liftoff_spread[robot] = detail["liftoff_spread"]
+        robot_duty[robot] = detail["duty"]
         robot_labels[robot] = label
         strides = detail["stride_timing"][:MAX_STRIDES]
         stride_timing[robot, : len(strides)] = strides
@@ -504,7 +567,7 @@ def cell_metrics(log, speed, legs, names, dt, args):
     robot_leg_shares = np.full((len(ok), len(legs)), np.nan)
     robot_leg_shares[ok] = shares
     names_list = [name for name, _ in gaits]
-    names_list += ["bound"] + TWO_LEG_GAITS if len(legs) == 3 else []
+    names_list += ["bound", STAGGERED] + TWO_LEG_GAITS if len(legs) == 3 else []
     names_list += [PERIODIC, "irregular", "not stepping"]
     counts = np.array([labels.count(name) for name in names_list])
     robot_motion = motion_metrics(log, speed, dt)
@@ -529,6 +592,12 @@ def cell_metrics(log, speed, legs, names, dt, args):
         "robot_lead": robot_lead,
         "robot_third_use": robot_third_use,
         "robot_stride_cv": robot_stride_cv,
+        # Liftoff timing of the other legs after the reference leg's liftoff
+        # (stride fractions), its largest stride-to-stride spread, and each
+        # leg's share of time on the ground (duty factor).
+        "robot_liftoff_timing": robot_liftoff_timing,
+        "robot_liftoff_spread": robot_liftoff_spread,
+        "robot_duty": robot_duty,
         "robot_leg_shares": robot_leg_shares,
         "robot_stride_timing": stride_timing.astype(np.float32),
         "peak_force": np.nanmean(peaks) if peaks else np.nan,
@@ -603,7 +672,12 @@ TWO_LEG_COLORS = {
 # Hop family in blue (in gait-mix maps the hop is shaded by its rear-leg
 # lead; 'rear-first hop' only appears in results from before the hop and the
 # rear-first hop were merged), the bound in purple.
-HOP_COLORS = {"hop": "#1f5fae", "rear-first hop": "#8cc0ef", "bound": "#7d5bd0"}
+HOP_COLORS = {
+    "hop": "#1f5fae",
+    "rear-first hop": "#8cc0ef",
+    "bound": "#7d5bd0",
+    "hop, staggered landing": "#4fa3e0",
+}
 # Kept out of the palette for other gaits when the hop family is shown.
 BLUE_PURPLE = {"#2a78d6", "#7d5bd0"}
 
@@ -991,7 +1065,7 @@ if __name__ == "__main__":
     def load(task):
         play_argv = ["--task", task, "--headless", "--no-keyboard", "--no-record"]
         play_argv += ["--num_envs", str(args.robots), "--seed", str(args.seed)]
-        play_argv += ["--checkpoint", str(args.checkpoint)]
+        play_argv += ["--checkpoint", str(args.checkpoint), "--device", args.device]
         if args.load_run is not None:
             play_argv += ["--load_run", args.load_run]
         with torch.no_grad():
@@ -1073,8 +1147,17 @@ if __name__ == "__main__":
     )
     saved["robot_leg_shares"] = np.full(shape + (args.robots, len(leg_names)), np.nan)
     saved["robot_label"] = np.full(shape + (args.robots,), -1, dtype=int)
-    for key in ("robot_lead", "robot_third_use", "robot_stride_cv"):
+    for key in (
+        "robot_lead",
+        "robot_third_use",
+        "robot_stride_cv",
+        "robot_liftoff_spread",
+    ):
         saved[key] = np.full(shape + (args.robots,), np.nan)
+    saved["robot_liftoff_timing"] = np.full(
+        shape + (args.robots, len(leg_names) - 1), np.nan
+    )
+    saved["robot_duty"] = np.full(shape + (args.robots, len(leg_names)), np.nan)
     saved["robot_stride_timing"] = np.full(
         shape + (args.robots, MAX_STRIDES, len(leg_names) - 1), np.nan, dtype=np.float32
     )

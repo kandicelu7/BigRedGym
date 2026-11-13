@@ -80,7 +80,10 @@ def get_args(argv=None):
         help="ramp mode: sweep the command from V_START to V_END and back [m/s]",
     )
     parser.add_argument(
-        "--ramp_time", type=float, default=30.0, help="duration of each leg of the ramp [s]"
+        "--ramp_time",
+        type=float,
+        default=30.0,
+        help="duration of each leg of the ramp [s]",
     )
     parser.add_argument(
         "--ramp_settle",
@@ -161,6 +164,38 @@ def touchdowns(in_contact, min_air_steps):
         previous_on >= 0, rising - on_steps[np.maximum(previous_on, 0)] - 1, rising
     )
     return rising[air >= min_air_steps]
+
+
+def liftoffs(in_contact, min_air_steps):
+    """Steps where a foot leaves the ground (its first airborne step) for at
+    least `min_air_steps`."""
+    on = in_contact.astype(bool)
+    falling = np.flatnonzero(on[:-1] & ~on[1:]) + 1
+    on_steps = np.flatnonzero(on)
+    following = np.searchsorted(on_steps, falling)
+    air = np.where(
+        following < len(on_steps),
+        on_steps[np.minimum(following, len(on_steps) - 1)] - falling,
+        len(on) - falling,
+    )
+    return falling[air >= min_air_steps]
+
+
+def relative_liftoffs(contact, ref, legs, min_air_steps, max_stride_steps):
+    """Per stride of leg `ref` (liftoff to liftoff): when each leg lifts off,
+    as a fraction of the stride, wrapped to [-0.25, 0.75) as in
+    relative_touchdowns. Returns {leg: fractions}."""
+    events = {leg: liftoffs(contact[:, leg], min_air_steps) for leg in legs}
+    ref_events = liftoffs(contact[:, ref], min_air_steps)
+    fractions = {leg: [] for leg in legs}
+    for a, b in zip(ref_events[:-1], ref_events[1:]):
+        if b - a > max_stride_steps:
+            continue
+        for leg in legs:
+            inside = events[leg][(events[leg] >= a) & (events[leg] < b)]
+            fraction = (inside[0] - a) / (b - a) if inside.size else np.nan
+            fractions[leg].append((fraction + 0.25) % 1.0 - 0.25)
+    return {k: np.array(v) for k, v in fractions.items()}
 
 
 def relative_touchdowns(contact, ref, legs, min_air_steps, max_stride_steps):
