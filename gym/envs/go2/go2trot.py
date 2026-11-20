@@ -70,33 +70,6 @@ class Go2Trot(LeggedRobot):
     def _expected_stance(self):
         return torch.sin(self._leg_phases()) > 0
 
-    def _pre_decimation_step(self):
-        self._update_gait_reference()
-        reference = self.gait_reference + self.default_dof_pos.index_select(
-            1, self.actuated_dof_indices
-        )
-        # Bound the full PD position command. Keep the applied residual in the
-        # task buffer so observations and action-history rewards describe it;
-        # the runner retains its separate raw samples for PPO likelihoods.
-        self.dof_pos_target.clamp_(
-            min=self._actuated_dof_pos_limits[:, 0] - reference,
-            max=self._actuated_dof_pos_limits[:, 1] - reference,
-        )
-
-    def _compute_torques(self):
-        pos = self.dof_pos.index_select(1, self.actuated_dof_indices)
-        vel = self.dof_vel.index_select(1, self.actuated_dof_indices)
-        default_pos = self.default_dof_pos.index_select(1, self.actuated_dof_indices)
-        torques = (
-            self.p_gains
-            * (self.gait_reference + self.dof_pos_target + default_pos - pos)
-            + self.d_gains * (self.dof_vel_target - vel)
-            + self.tau_ff
-        )
-        return torch.clip(
-            torques, -self.actuated_torque_limits, self.actuated_torque_limits
-        ).view(self.torques.shape)
-
     def _reset_system(self, reset_mask):
         super()._reset_system(reset_mask)
         phase = torch_rand_float(
@@ -145,14 +118,6 @@ class Go2Trot(LeggedRobot):
             )
             self.commands.masked_fill_(drop, 0.0)
 
-        #aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  
-        if self.commands.shape[1] > 3:
-            lo, hi = self.command_ranges["height"]
-            height = torch_rand_float(
-                lo, hi, shape=(self.num_envs, 1), device=self.device
-            )
-            masked_update(self.commands[:, 3:4], height, command_mask)
-
     def _reset_idx(self, reset_mask):
         super()._reset_idx(reset_mask)
         self.dof_pos_target.masked_fill_(reset_mask.unsqueeze(1), 0.0)
@@ -178,6 +143,7 @@ class Go2Trot(LeggedRobot):
     def _post_decimation_step(self):
         super()._post_decimation_step()
         self._update_phase_observation()
+        self._update_gait_reference()
 
     def _foot_contact_strength(self):
         """Map upward foot load smoothly from zero to nominal body-weight."""
@@ -208,6 +174,13 @@ class Go2Trot(LeggedRobot):
         """Penalize load carried by feet during their scheduled swing phase."""
         phase = torch.sin(self._leg_phases())
         return -torch.mean(torch.relu(-phase) * self._foot_contact_strength(), dim=1)
+
+    def _reward_reference_traj(self):
+        pos = self.dof_pos.index_select(1, self.actuated_dof_indices)
+        default_pos = self.default_dof_pos.index_select(1, self.actuated_dof_indices)
+        scale = self.scales["dof_pos"].index_select(0, self.actuated_dof_indices)
+        error = (self.gait_reference + default_pos - pos) / scale
+        return (self._sqrdexp(error) - 0.2 * error.abs()).mean(dim=1)
 
     def _reward_lin_vel_z(self):
         """Penalize z axis base linear velocity with squared exp"""
@@ -244,9 +217,7 @@ class Go2Trot(LeggedRobot):
 
     def _reward_tracking_ang_vel(self):
         """Tracking of angular velocity commands (yaw)"""
-        ang_vel_error = torch.square(
-            (self.commands[:, 2] - self.base_ang_vel[:, 2]) / 2.5
-        )
+        ang_vel_error = (self.commands[:, 2] - self.base_ang_vel[:, 2]) / 2.5
         return self._sqrdexp(ang_vel_error)
 
     def _reward_dof_vel(self):
@@ -260,11 +231,3 @@ class Go2Trot(LeggedRobot):
             ),
             dim=1,
         )
-
-    def _reward_height_tracking(self):
-        """Track commanded base height (standing height + offset)"""
-        target = self.cfg.reward_settings.standing_height + self.commands[:, 3]
-        error = (
-            self.base_height.flatten() - target
-        ) / self.cfg.reward_settings.height_tracking_scale
-        return self._sqrdexp(error)

@@ -7,9 +7,8 @@ Convention sheet (all spike-verified 2026-07-12, see q2-backend-integration):
   misleading).  Constants VEL_ANG / VEL_LIN below are the only place this
   knowledge lives.
 - Contact forces come from per-link `flags="contact"` force sensors injected
-    by vsim_asset; sensor buffers are [force(3), torque(3)] in sensor/link
-    axes despite requesting the environment frame, so refresh rotates them to
-    world axes (+z sums to m·g on a resting body).
+  by vsim_asset. Request LOCAL buffers [force(3), torque(3)] explicitly, then
+  rotate from link axes to task world axes (+z sums to m·g at rest).
 - Motors are injected gear=1.0 per movable joint → set_motor_forces takes
   raw Nm. Torques arrive in canonical DOF order; `MotorDef.dof_index` maps
   them to native motor order.
@@ -601,7 +600,7 @@ class VSimBackend(SimBackend):
                 grp.create_force_sensor_command(
                     v.wrap_gpu_buffer(self._sensor_big[i]),
                     art.get_force_sensor_handle(i),
-                    frame_type=v.FrameType.ENVIRONMENT,
+                    frame_type=v.FrameType.LOCAL,
                 )
             )
         self._fs_arr = gym.create_gpu_array(cmds)
@@ -725,10 +724,9 @@ class VSimBackend(SimBackend):
         rbs[..., 3:7] = link_tf[..., 0:4]
         rbs[..., 7:10] = link_vel[..., VEL_LIN]
         rbs[..., 10:13] = link_vel[..., VEL_ANG]
-        # Sensor buffers are [force, torque] in the attached sensor/link frame,
-        # even when the command requests ENVIRONMENT (verified against static
-        # weight). Rotate the canonical link-local forces into world axes to
-        # satisfy the SimBackend contact tensor contract.
+        # LOCAL sensor buffers are [force, torque] in the attached link frame.
+        # Rotate into task world axes; ENVIRONMENT must not receive this same
+        # link rotation. The standing Go2 test checks all four yaw quadrants.
         sensor_forces = self._sensor_big.index_select(0, self._canonical_body_to_sensor)
         force_local = sensor_forces[:, :, 0:3].permute(1, 0, 2)
         link_quat = link_tf[..., 0:4]
@@ -800,7 +798,7 @@ class VSimBackend(SimBackend):
     @property
     def special_keys(self):
         """Translate shared special-key names into vlearn's UserKey enum."""
-        return {"UP": self._v.UserKey.Up, "DOWN": self._v.UserKey.Down}
+        return {"UP": self._v.UserKey.UpArrow, "DOWN": self._v.UserKey.DownArrow}
 
     @property
     def escape_key(self):

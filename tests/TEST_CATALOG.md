@@ -79,6 +79,21 @@ call, and teardown, and compare matching source/dependency revisions.
 
 ## Task registry, scaling, rewards, and actions
 
+`test_vsim_contact_frames.py` checks a standing Go2 at four yaw angles: mean
+world contact forces must balance gravity within 3% of body weight. This catches
+rotating environment-frame forces as if they were link-local; it requires the
+licensed CUDA setup and explicit `Q2_VSIM_TESTS=1` opt-in.
+
+`test_go2trot_performance.py` validates the fixed-command performance gate with
+analytic balanced trots and counterexamples: standing on every foot, inverted
+gait timing, single-leg loading, alternating target jitter, missed commands,
+early failures, and load that swaps between strides. These are metric tests;
+policy quality requires running `scripts/evaluate_go2trot.py --check` on an
+explicit checkpoint and backend.
+
+The colocated `gym/envs/go2/test_go2trot.py` also checks consecutive-action
+smoothness and symmetric yaw-error rewards against hand-calculated values.
+
 | File | Protected behavior and oracle | Disposition and overlap |
 |---|---|---|
 | [test_task_registry.py](unit_tests/test_task_registry.py) | Exact manifest registration, explicit learning-class resolution, selected reset binding, absence of unsupported legacy config, and an actual CPU action step for every declared task. Manifest/static and integration oracles. | **Keep.** The stale `collapse_fixed_joints` declaration was removed and this gate passes in the recorded baseline. One step does not establish runner construction or learning. |
@@ -108,7 +123,7 @@ call, and teardown, and compare matching source/dependency revisions.
 | File | Protected behavior and oracle | Disposition and overlap |
 |---|---|---|
 | [test_deploy_optional_sdk.py](unit_tests/test_deploy_optional_sdk.py) | Simulation/offline imports and help work with SDK/DDS deliberately unavailable; hardware invocation reports the optional extra. Isolated subprocess import blockers. | **Keep.** Optional-dependency boundaries must work even on a machine where the SDK happens to be installed. |
-| [test_go2_deploy_obs.py](unit_tests/test_go2_deploy_obs.py) | Canonical deployment joint/gyro/gravity ordering and scaling, action mapping, and CPU-task observation parity. Hand-built messages plus real task comparison. | **Keep.** Strict full-observation xfail remains explicit debt: residual clipping differs from full gait/default target projection. Other parity assertions must stay active. |
+| [test_go2_deploy_obs.py](unit_tests/test_go2_deploy_obs.py) | Canonical joint/gyro/gravity ordering and scaling, static-posture offsets, active gait frequency, and unrestricted target assembly using hand-built messages. | **Keep.** Covers current reward-only gait semantics. The CPU-task observation-parity test and its expected-failure variant were removed; these utility tests do not establish hardware behavior or checkpoint compatibility. |
 | [test_unitree_sdk.py](unit_tests/test_unitree_sdk.py) | Real optional SDK/DDS/CRC imports, default command contents, damping-only emergency command, and CRC response to a changed motor field. Actual native dependency and message mutation. | **Keep; Linux opt-in, no robot connection.** Recomputing CRC with the same SDK tests integration, not independent checksum algorithm correctness. Mutation coverage prevents a constant checksum from passing. |
 | [test_recurrent_thread.py](unit_tests/test_recurrent_thread.py) | Real Linux timer/thread lifecycle, periodic callbacks, timeout behavior, failure results, descriptor close, and replacement-instance cleanup. Observed OS resources plus narrowly injected errors. | **Keep.** Broadly mocking timers would lose the resource/lifecycle oracle; elapsed-time bounds are scheduler-sensitive and should be reviewed with measured cost. |
 | [test_fetch_unitree_sdk.py](unit_tests/test_fetch_unitree_sdk.py) | Official-pin bootstrap mechanics preserve existing revisions and staged/unstaged/untracked work, tolerate ignored caches, and report failures. Temporary local Git repositories, offline. | **Keep.** Exercises actual Git behavior rather than comparing generated command strings. |
@@ -160,13 +175,15 @@ still use `importorskip` and should be made explicit. Unitree tests are opt-in
 and do not connect to hardware.
 
 GitHub's unit workflow runs default tests, both colocated roots, Ruff, and a
-package build on Ubuntu/Python 3.11 for `main`/`dev` pushes and pull requests.
+package build on Ubuntu/Python 3.11 for `main`/`dev` pushes and pull requests,
+with manual dispatch available.
 It does not establish Warp/VSim correctness, hardware timing, or policy
-learning. Its separate file-size workflow currently checks only the last
-commit on pushes; review that scope separately from test consolidation.
+learning. Its separate file-size workflow checks the event's change range on
+pushes and pull requests, with manual dispatch available. `uv.lock` is exempt
+from the 100 KiB limit as dependency metadata.
 
-Keep the deployment observation xfail visible in baseline evidence. The
-previous stale-configuration registry failure is closed by the prerequisite
+The removed deployment observation-parity test supplies no passing parity
+evidence. The previous stale-configuration registry failure is closed by the prerequisite
 config cleanup and its passing test result, not by deleting the check. Never
 reinterpret unexecuted optional tests as passes.
 

@@ -10,7 +10,7 @@ class DeployConfig:
     kp = 30.0  # Stiffness constant
     kd = 2.0  # Damping constant
 
-    phase_frequency = 2.0  # for go2trot env
+    phase_frequency = 2.0  # Go2Trot gait frequency in Hz (cycles/s)
 
     # Apply exponential moving average to actions
     exp_moving_avg = True
@@ -51,25 +51,18 @@ class DeployConfig:
         "phase_frequency": 1,
     }
 
-    default_dof_pos = torch.zeros(12)
-
-    lower_joint_limit = torch.tensor(
+    # Canonical FL, FR, RL, RR order; hip, thigh, calf within each leg.
+    default_dof_pos = torch.tensor(
         [
-            -0.83,
-            -1.59,
-            -2.72,
-            -0.83,
-            -1.59,
-            -2.72,
-            -0.83,
-            -0.52,
-            -2.72,
-            -0.83,
-            -0.52,
-            -2.72,
+            angle
+            for leg in ("FL", "FR", "RL", "RR")
+            for angle in (
+                Go2TrotCfg.init_state.default_joint_angles["hip_joint"],
+                Go2TrotCfg.init_state.default_joint_angles[f"{leg}_thigh_joint"],
+                Go2TrotCfg.init_state.default_joint_angles["calf_joint"],
+            )
         ]
     )
-    upper_joint_limit = torch.tensor(4 * [0.83, 3.49, -0.83])
 
     # s: how often terminal should print ctrl freq, instructions
     terminal_log_period = 2.0

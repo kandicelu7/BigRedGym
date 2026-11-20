@@ -81,6 +81,32 @@ def _expected_base_state(env):
     }
 
 
+def test_runner_observations_include_current_gait_phase_and_frequency(task):
+    env, runner_cfg, _ = task
+    env.phase[:] = torch.tensor(
+        [[0.0], [math.pi / 2], [math.pi], [3 * math.pi / 2]],
+        device=env.device,
+    )
+    env.phase_frequency[:] = torch.tensor(
+        [[1.0], [1.5], [2.0], [3.0]], device=env.device
+    )
+    env._update_phase_observation()
+
+    for _ in range(2):
+        expected = torch.cat(
+            (torch.sin(env.phase), torch.cos(env.phase), env.phase_frequency),
+            dim=-1,
+        )
+        for names, size in (
+            (runner_cfg.actor.obs, 48),
+            (runner_cfg.critic.obs, 52),
+        ):
+            observation = env.get_states(names)
+            assert observation.shape == (env.num_envs, size)
+            torch.testing.assert_close(observation[:, -3:], expected)
+        env.step()
+
+
 @pytest.mark.parametrize("reset_mode", ("reset_to_basic", "reset_to_range"))
 def test_selected_reset_refreshes_actor_and_critic_observations(
     task, reset_mode, monkeypatch

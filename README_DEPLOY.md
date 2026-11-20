@@ -59,6 +59,21 @@ Settings can be configured in `go2_deploy/deploy_config.py`. Options include:
 - kd (Damping constant)
 - Observation vector: a list of available observations can be found in `obs_sizes`
 - Command limits (ex. pushing the joystick all the way to the right commands x m/s)
+- Gait frequency (`phase_frequency`, in Hz): controls the Go2Trot phase clock and its frequency observation
+
+For current Go2Trot policies, joint-position observations are relative to the
+static nominal posture from `Go2TrotCfg` (hip 0, thigh 0.96, calf -1.36 radians).
+Scaled policy actions are offsets from that posture. The gait reference is a
+training reward only; deployment retains the sine/cosine phase observations and
+observes the controller's active gait frequency, divided by its observation scale.
+The previous-action observation contains the applied offset after optional EMA
+smoothing. Neither that offset nor the resulting position target is clipped.
+Deployment sends position targets and PD gains to Unitree; this path does not
+compute or clamp torques locally.
+
+Offline utility tests cover these mappings using synthetic messages. They do
+not establish hardware behavior or compatibility with an older checkpoint's
+controller semantics.
 
 ## Deployment
 

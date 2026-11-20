@@ -20,6 +20,7 @@ class_dict = {
     "Pendulum": ".pendulum.pendulum",
     "Go2": ".go2.go2",
     "Go2Trot": ".go2.go2trot",
+    "Go2Osc": ".go2.go2osc",
 }
 
 config_dict = {
@@ -36,6 +37,14 @@ config_dict = {
     "PendulumPSDCfg": ".pendulum.pendulum_PSD_config",
     "Go2Cfg": ".go2.go2_config",
     "Go2TrotCfg": ".go2.go2trot_config",
+    "Go2OscCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaCfg": ".go2.go2osc_config",
+    "Go2OscOmegaCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedOmegaCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaStraightCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaRobustCfg": ".go2.go2osc_config",
 }
 
 runner_config_dict = {
@@ -52,6 +61,15 @@ runner_config_dict = {
     "PendulumPSDRunnerCfg": ".pendulum.pendulum_PSD_config",
     "Go2RunnerCfg": ".go2.go2_config",
     "Go2TrotRunnerCfg": ".go2.go2trot_config",
+    "Go2OscRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedRunnerCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaRunnerCfg": ".go2.go2osc_config",
+    "Go2OscOmegaRunnerCfg": ".go2.go2osc_config",
+    "Go2OscHindLockedOmegaRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaGait2RunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaStraightRunnerCfg": ".go2.go2osc_config",
+    "Go2OscFrontLockedOmegaRobustRunnerCfg": ".go2.go2osc_config",
 }
 
 task_dict = {
@@ -88,6 +106,47 @@ task_dict = {
     "psd_pendulum": ["Pendulum", "PendulumPSDCfg", "PendulumPSDRunnerCfg"],
     "go2": ["Go2", "Go2Cfg", "Go2RunnerCfg"],
     "go2trot": ["Go2Trot", "Go2TrotCfg", "Go2TrotRunnerCfg"],
+    "go2osc": ["Go2Osc", "Go2OscCfg", "Go2OscRunnerCfg"],
+    "go2osc_front_locked": [
+        "Go2Osc",
+        "Go2OscFrontLockedCfg",
+        "Go2OscFrontLockedRunnerCfg",
+    ],
+    "go2osc_hind_locked": [
+        "Go2Osc",
+        "Go2OscHindLockedCfg",
+        "Go2OscHindLockedRunnerCfg",
+    ],
+    "go2osc_front_locked_omega": [
+        "Go2Osc",
+        "Go2OscFrontLockedOmegaCfg",
+        "Go2OscFrontLockedOmegaRunnerCfg",
+    ],
+    "go2osc_omega": [
+        "Go2Osc",
+        "Go2OscOmegaCfg",
+        "Go2OscOmegaRunnerCfg",
+    ],
+    "go2osc_hind_locked_omega": [
+        "Go2Osc",
+        "Go2OscHindLockedOmegaCfg",
+        "Go2OscHindLockedOmegaRunnerCfg",
+    ],
+    "go2osc_front_locked_omega_gait2": [
+        "Go2Osc",
+        "Go2OscFrontLockedOmegaCfg",
+        "Go2OscFrontLockedOmegaGait2RunnerCfg",
+    ],
+    "go2osc_front_locked_omega_straight": [
+        "Go2Osc",
+        "Go2OscFrontLockedOmegaStraightCfg",
+        "Go2OscFrontLockedOmegaStraightRunnerCfg",
+    ],
+    "go2osc_front_locked_omega_robust": [
+        "Go2Osc",
+        "Go2OscFrontLockedOmegaRobustCfg",
+        "Go2OscFrontLockedOmegaRobustRunnerCfg",
+    ],
 }
 
 
@@ -111,4 +170,21 @@ for task_name, (class_name, config_name, runner_config_name) in task_dict.items(
         _loaded[class_name],
         _loaded[config_name](),
         _loaded[runner_config_name](),
+    )
+
+# Coarse (speed, frequency) sweep of front-locked policies, one task per cell.
+# Generated, so not in the literal dicts above: --original_cfg cannot rebuild
+# these tasks from a run's snapshot, but their configs are fixed per name.
+from .go2.go2osc_config import STUDY_TASKS, SWEEP_TASKS  # noqa: E402
+
+# Reward study (go2osc_config.STUDY_SETTINGS), generated the same way.
+for task_name, (config_class, runner_config_class) in {
+    **SWEEP_TASKS,
+    **STUDY_TASKS,
+}.items():
+    task_registry.register(
+        task_name,
+        _loaded["Go2Osc"],
+        config_class(),
+        runner_config_class(),
     )

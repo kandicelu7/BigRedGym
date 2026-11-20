@@ -51,7 +51,13 @@ def make_train_parser():
         "--experiment_name",
         type=str,
         default=None,
-        help="Override experiment_name (log dir is logs/<experiment_name>/...)",
+        help="Experiment folder under logs/ (default: task config value)",
+    )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Run label appended to the timestamp in the log folder and W&B name",
     )
     parser.add_argument(
         "--resume",
@@ -74,6 +80,14 @@ def make_train_parser():
         "--original_cfg",
         action="store_true",
         help="Load environment and runner configs saved with the selected run.",
+    )
+    parser.add_argument(
+        "--init_from",
+        type=str,
+        default=None,
+        help="Start from this checkpoint's weights (path relative to the repo or "
+        "absolute; fresh optimizer, iterations from 0). Overrides the task's "
+        "runner.init_from.",
     )
     parser.add_argument("--headless", action="store_true", default=False)
     # wandb
@@ -128,12 +142,16 @@ def setup(args=None, env_cfg=None, train_cfg=None):
 
     if args.experiment_name is not None:
         train_cfg.runner.experiment_name = args.experiment_name
+    if args.run_name is not None:
+        train_cfg.runner.run_name = args.run_name
     if args.resume:
         train_cfg.runner.resume = True
     if args.load_run is not None:
         train_cfg.runner.load_run = args.load_run
     if args.checkpoint is not None:
         train_cfg.runner.checkpoint = args.checkpoint
+    if args.init_from is not None:
+        train_cfg.runner.init_from = args.init_from
 
     train_cfg.runner.device = args.device
 
@@ -159,6 +177,18 @@ def setup(args=None, env_cfg=None, train_cfg=None):
     randomize_episode_counters(env)
 
     policy_runner = task_registry.make_alg_runner(env, train_cfg)
+    # Fine-tuning: start from another run's weights (path relative to the
+    # repo), with a fresh optimizer and the iteration count from 0.
+    init_from = getattr(train_cfg.runner, "init_from", None)
+    if init_from and not args.resume:
+        import os
+
+        from gym.utils.helpers import GYM_ROOT_DIR
+
+        path = os.path.join(GYM_ROOT_DIR, init_from)
+        policy_runner.load(path, load_optimizer=False)
+        policy_runner.it = 0
+        print(f"Initialized from: {path}")
 
     local_code_save_helper.save_local_files_to_logs(
         train_cfg.log_dir,

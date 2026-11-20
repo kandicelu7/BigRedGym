@@ -16,6 +16,7 @@ from gym import GYM_ROOT_DIR
 from gym.envs.base.robot_layout import RobotLayout
 from gym.envs.base.sim_backend import SimBackend
 from gym.envs.base.urdf_limits import parse_urdf_limits
+from gym.envs.base.urdf_visuals import replace_visuals_from_mjcf
 
 # Quaternion convention helpers: MuJoCo [w,x,y,z] ↔ task-layer [x,y,z,w]
 WXYZ_TO_XYZW = [1, 2, 3, 0]
@@ -113,13 +114,15 @@ class MuJocoBackendBase(SimBackend):
 
     # ── World building ─────────────────────────────────────────────────────────
 
-    def _load_model(self, cfg, discard_visual: bool = False) -> mujoco.MjModel:
+    def _load_model(
+        self, cfg, discard_visual: bool = False, visual_model_path: str | None = None
+    ) -> mujoco.MjModel:
         """Load URDF, configure model (free joint, ground, physics), return MjModel."""
         asset_path = cfg.asset.file.format(GYM_ROOT_DIR=GYM_ROOT_DIR)
         # Cache URDF effort/velocity limits — MuJoCo drops these on import
         # (it expects them on actuators, but we have none).
         self._urdf_limits = self._parse_urdf_limits(asset_path)
-        spec = self._load_urdf_spec(asset_path)
+        spec = self._load_urdf_spec(asset_path, visual_model_path)
         spec.compiler.balanceinertia = True
         spec.compiler.discardvisual = discard_visual
 
@@ -208,6 +211,11 @@ class MuJocoBackendBase(SimBackend):
         spec.option.disableflags = cfg.mujoco.disableflags
 
         mjm = spec.compile()
+        if visual_model_path is not None:
+            # Group 3 is hidden by default in MuJoCo. Keep collision geometry
+            # available for inspection without covering the detailed visuals.
+            collision = (mjm.geom_contype != 0) | (mjm.geom_conaffinity != 0)
+            mjm.geom_group[collision & (mjm.geom_bodyid != 0)] = 3
         mjm.geom_solref[:] = cfg.mujoco.solref
         if terrain_sliding_friction is not None:
             # MuJoCo combines same-priority geom friction using the larger
@@ -425,7 +433,9 @@ class MuJocoBackendBase(SimBackend):
         return {"lower": lower, "upper": upper, "velocity": velocity, "effort": effort}
 
     @staticmethod
-    def _load_urdf_spec(urdf_path: str) -> "mujoco.MjSpec":
+    def _load_urdf_spec(
+        urdf_path: str, visual_model_path: str | None = None
+    ) -> "mujoco.MjSpec":
         """Load URDF as MjSpec, preserving <visual> meshes where MuJoCo supports them.
 
         MuJoCo's URDF importer discards <visual> geoms during file parse unless
@@ -437,6 +447,8 @@ class MuJocoBackendBase(SimBackend):
         so the compile doesn't fail looking for a decoder.
         """
         root = ET.parse(urdf_path).getroot()
+        if visual_model_path is not None:
+            replace_visuals_from_mjcf(root, visual_model_path)
         has_unsupported = any(
             (m.get("filename") or "").lower().endswith((".dae", ".collada"))
             for m in root.iter("mesh")

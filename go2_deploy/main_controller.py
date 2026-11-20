@@ -103,11 +103,6 @@ class MainController:
     def _init_go2trot_buffers(self):
         self.phase_frequency = self.cfg.phase_frequency
         self.phase = 0.0
-        self._gait_reference = torch.zeros(12)
-        self._gait_phase_offsets = torch.tensor([0, math.pi, math.pi, 0])
-        self._gait_dof_phase_offsets = self._gait_phase_offsets.repeat_interleave(3)
-        self._gait_joint_offsets = torch.tensor(4 * [0.0, 0.96, -1.36])
-        self._gait_joint_amplitudes = torch.tensor(4 * [0.0, -0.15, 0.30])
 
     # Unitree SDK pub/sub clients
     def _init_unitree_clients(self):
@@ -160,14 +155,9 @@ class MainController:
 
     # Main control loop ------------------------------------------
 
-    # Update self.phase, self._gait_reference
+    # Update the phase observation; the gait reference is a training reward only.
     def _process_go2trot_buffers(self, t):
         self.phase = 2 * math.pi * self.phase_frequency * t % (2 * math.pi)
-        joint_phase = self.phase + self._gait_dof_phase_offsets
-        self._gait_reference = (
-            self._gait_joint_offsets
-            + self._gait_joint_amplitudes * torch.sin(joint_phase)
-        )
 
     # Read last lowstate msg, publish LowCmd_
     def _control_loop(self):
@@ -211,10 +201,9 @@ class MainController:
         self.csv_logger.log_control(t, self.last_obs, action, smoothed_action, lowcmd)
         self.action_count += 1
 
-    # Return torch tensor: target joint position (minus default pos, gait traj)
+    # Return joint-position offsets from the static default posture, in radians.
     def _act(self, last_obs):
         if self._state == State.CUSTOM_CTRL:
-            # return torch.zeros(12) (replay gait trajectory only)
             return self.rl_controller.act(last_obs)
         elif self._state == State.INTERMEDIATE:
             return deploy_utility.target_pos_to_action(self, self.intermediate_pos)
